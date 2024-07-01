@@ -38,9 +38,8 @@ Clap_Event_Union :: union {
     clap.event_param_value_t,
 }
 
-Plugin :: struct {
-    using base: Plugin_Base,
-    window: Window,
+Plugin_Base :: struct {
+    window: Plugin_Window,
     gui_is_running: bool,
     gui_thread: ^thread.Thread,
     clap_host: ^clap.host_t,
@@ -59,7 +58,6 @@ clap_plugin_init :: proc "c" (plugin: ^clap.plugin_t) -> bool {
     plugin := cast(^Plugin)(plugin.plugin_data)
 
     window_init(&plugin.window, {{0, 0}, {400, 300}})
-    plugin.window.user_data = plugin
     plugin.window.should_open = false
     plugin.window.child_kind = .Embedded
 
@@ -330,7 +328,7 @@ clap_extension_gui := clap.plugin_gui_t{
                 } else {
                     plugin.window.should_close = true
                 }
-                gui_update(plugin)
+                gui_update(&plugin.window)
                 poll_window_events()
                 free_all(context.temp_allocator)
                 if !plugin.gui_is_running && !plugin.window.is_open {

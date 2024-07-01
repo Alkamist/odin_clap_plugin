@@ -286,8 +286,6 @@ Window_Base :: struct {
     using rectangle: Rectangle,
     actual_rectangle: Rectangle,
 
-    user_data: rawptr,
-
     mouse_position: Vector2,
     previous_mouse_position: Vector2,
     mouse_down: [Mouse_Button]bool,

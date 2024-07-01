@@ -380,7 +380,7 @@ _pugl_event_proc :: proc "c" (view: ^pugl.View, event: ^pugl.Event) -> pugl.Stat
         refresh := size != window.actual_rectangle.size
         input_window_resize(window, size)
         if window.child_kind != .Embedded && refresh {
-            gui_update(window.user_data)
+            gui_update(window)
         }
 
     case .POINTER_IN:
@@ -398,32 +398,32 @@ _pugl_event_proc :: proc "c" (view: ^pugl.View, event: ^pugl.Event) -> pugl.Stat
     case .MOTION:
         event := event.motion
         input_mouse_move(window, {f32(event.x), f32(event.y)})
-        gui_update(window.user_data)
+        gui_update(window)
 
     case .SCROLL:
         event := &event.scroll
         input_mouse_scroll(window, {f32(event.dx), f32(event.dy)})
-        gui_update(window.user_data)
+        gui_update(window)
 
     case .BUTTON_PRESS:
         event := &event.button
         input_mouse_press(window, _pugl_button_to_mouse_button(event.button))
-        gui_update(window.user_data)
+        gui_update(window)
 
     case .BUTTON_RELEASE:
         event := &event.button
         input_mouse_release(window, _pugl_button_to_mouse_button(event.button))
-        gui_update(window.user_data)
+        gui_update(window)
 
     case .KEY_PRESS:
         event := &event.key
         input_key_press(window, _pugl_key_event_to_keyboard_key(event))
-        gui_update(window.user_data)
+        gui_update(window)
 
     case .KEY_RELEASE:
         event := &event.key
         input_key_release(window, _pugl_key_event_to_keyboard_key(event))
-        gui_update(window.user_data)
+        gui_update(window)
 
     case .TEXT:
         event := &event.text
@@ -437,7 +437,7 @@ _pugl_event_proc :: proc "c" (view: ^pugl.View, event: ^pugl.Event) -> pugl.Stat
         if !skip {
             r, len := utf8.decode_rune(event.string[:4])
             input_rune(window, r)
-            gui_update(window.user_data)
+            gui_update(window)
         }
 
     case .CLOSE:
