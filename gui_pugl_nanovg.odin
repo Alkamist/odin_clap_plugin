@@ -14,7 +14,6 @@ import "pugl"
 @(thread_local) _pugl_odin_context: runtime.Context
 @(thread_local) _open_gl_is_loaded: bool
 @(thread_local) _pugl_world: ^pugl.World
-@(thread_local) _pugl_window_count: int
 
 OPENGL_VERSION_MAJOR :: 3
 OPENGL_VERSION_MINOR :: 3
@@ -44,6 +43,30 @@ Window :: struct {
     view: ^pugl.View,
 
     nvg_ctx: ^nvg.Context,
+}
+
+backend_startup :: proc() {
+    when ODIN_BUILD_MODE == .Dynamic {
+        world_type := pugl.WorldType.MODULE
+    } else {
+        world_type := pugl.WorldType.PROGRAM
+    }
+    _pugl_world = pugl.NewWorld(world_type, {})
+
+    _generate_world_id :: proc "contextless" () -> u64 {
+        @(static) id: u64
+        return 1 + intrinsics.atomic_add(&id, 1)
+    }
+
+    world_id := fmt.aprint("WindowThread", _generate_world_id(), context.temp_allocator)
+    world_id_cstring := strings.clone_to_cstring(world_id, context.temp_allocator)
+
+    pugl.SetWorldString(_pugl_world, .CLASS_NAME, world_id_cstring)
+}
+
+backend_shutdown :: proc() {
+    pugl.FreeWorld(_pugl_world)
+    _pugl_world = nil
 }
 
 backend_poll_window_events :: proc() {
@@ -81,27 +104,6 @@ backend_window_end_frame :: proc(window: ^Window) {
 }
 
 backend_window_open :: proc(window: ^Window) {
-    _pugl_window_count = max(_pugl_window_count, 0)
-
-    if _pugl_world == nil && _pugl_window_count == 0 {
-        when ODIN_BUILD_MODE == .Dynamic {
-            world_type := pugl.WorldType.MODULE
-        } else {
-            world_type := pugl.WorldType.PROGRAM
-        }
-        _pugl_world = pugl.NewWorld(world_type, {})
-
-        _generate_world_id :: proc "contextless" () -> u64 {
-            @(static) id: u64
-            return 1 + intrinsics.atomic_add(&id, 1)
-        }
-
-        world_id := fmt.aprint("WindowThread", _generate_world_id(), context.temp_allocator)
-        world_id_cstring := strings.clone_to_cstring(world_id, context.temp_allocator)
-
-        pugl.SetWorldString(_pugl_world, .CLASS_NAME, world_id_cstring)
-    }
-
     if window.parent_handle != nil && window.child_kind == .None {
         window.child_kind = .Embedded
     }
@@ -157,11 +159,9 @@ backend_window_open :: proc(window: ^Window) {
     if window.is_visible {
         pugl.Show(view, .RAISE)
     }
-
-    pugl.GrabFocus(view)
-
     window.view = view
 
+    pugl.GrabFocus(view)
     pugl.EnterContext(view)
 
     if !_open_gl_is_loaded {
@@ -170,8 +170,6 @@ backend_window_open :: proc(window: ^Window) {
     }
 
     window.nvg_ctx = nvg_gl.Create({.ANTI_ALIAS, .STENCIL_STROKES})
-
-    _pugl_window_count += 1
 }
 
 backend_window_close :: proc(window: ^Window) {
@@ -182,13 +180,6 @@ backend_window_close :: proc(window: ^Window) {
     pugl.FreeView(window.view)
 
     window.view = nil
-
-    _pugl_window_count -= 1
-
-    if _pugl_world != nil && _pugl_window_count == 0 {
-        pugl.FreeWorld(_pugl_world)
-        _pugl_world = nil
-    }
 }
 
 backend_window_redraw :: proc(window: ^Window) {

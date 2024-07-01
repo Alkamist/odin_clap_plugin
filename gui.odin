@@ -18,9 +18,9 @@ get_id :: proc "contextless" () -> Id {
     return 1 + intrinsics.atomic_add(&id, 1)
 }
 
-poll_window_events :: proc() {
-    backend_poll_window_events()
-}
+gui_startup :: backend_startup
+gui_shutdown :: backend_shutdown
+poll_window_events :: backend_poll_window_events
 
 //==========================================================================
 // Input
