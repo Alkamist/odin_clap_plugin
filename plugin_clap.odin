@@ -5,7 +5,6 @@ import "core:c"
 import "core:fmt"
 import "core:sync"
 import "core:slice"
-import "core:thread"
 import "core:strings"
 import "core:strconv"
 import "clap"
@@ -39,9 +38,6 @@ Clap_Event_Union :: union {
 }
 
 Plugin_Base :: struct {
-    window: Plugin_Window,
-    gui_is_running: bool,
-    gui_thread: ^thread.Thread,
     clap_host: ^clap.host_t,
     clap_plugin: clap.plugin_t,
     parameter_values: [Parameter]f64,
@@ -56,9 +52,6 @@ Plugin_Base :: struct {
 clap_plugin_init :: proc "c" (plugin: ^clap.plugin_t) -> bool {
     context = main_context
     plugin := cast(^Plugin)(plugin.plugin_data)
-
-    window_init(&plugin.window, {{0, 0}, {400, 300}})
-    plugin.window.child_kind = .Embedded
 
     plugin_init(plugin)
     register_timer(plugin, 0, 0)
@@ -314,51 +307,40 @@ clap_extension_gui := clap.plugin_gui_t{
         }
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
-        plugin.gui_is_running = true
-        plugin.gui_thread = thread.create_and_start_with_data(plugin, proc(data: rawptr) {
-            plugin := cast(^Plugin)data
-            gui_startup()
-            defer gui_shutdown()
-            for {
-                if sync.atomic_load(&plugin.gui_is_running) {
-                    if !plugin.window.is_open && plugin.window.parent_handle != nil {
-                        window_open(&plugin.window)
-                    }
-                } else {
-                    window_close(&plugin.window)
-                }
-                gui_update(&plugin.window)
-                poll_window_events()
-                free_all(context.temp_allocator)
-                if !plugin.gui_is_running && !plugin.window.is_open {
-                    break
-                }
-            }
-            plugin.window.parent_handle = nil
-        }, self_cleanup = true)
+        plugin_gui_init(plugin)
 		return true
     },
     destroy = proc "c" (plugin: ^clap.plugin_t) {
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
-        sync.atomic_store(&plugin.gui_is_running, false)
+        plugin_gui_destroy(plugin)
     },
     set_scale = proc "c" (plugin: ^clap.plugin_t, scale: f64) -> bool {
         return false
     },
     get_size = proc "c" (plugin: ^clap.plugin_t, width, height: ^u32) -> bool {
+        context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
-        size := plugin.window.size
-        width^ = u32(sync.atomic_load(&size.x))
-        height^ = u32(sync.atomic_load(&size.y))
+        x, y := plugin_gui_size(plugin)
+        width^ = u32(x)
+        height^ = u32(y)
         return true
     },
     can_resize = proc "c" (plugin: ^clap.plugin_t) -> bool {
-        return true
+        context = main_context
+        plugin := cast(^Plugin)(plugin.plugin_data)
+        hints := plugin_gui_resize_hints(plugin)
+        return hints.can_resize_horizontally || hints.can_resize_vertically
     },
     get_resize_hints = proc "c" (plugin: ^clap.plugin_t, hints: ^clap.gui_resize_hints_t) -> bool {
-        hints.can_resize_horizontally = true
-        hints.can_resize_vertically = true
+        context = main_context
+        plugin := cast(^Plugin)(plugin.plugin_data)
+        h := plugin_gui_resize_hints(plugin)
+        hints.can_resize_horizontally = h.can_resize_horizontally
+        hints.can_resize_vertically = h.can_resize_vertically
+        hints.preserve_aspect_ratio = h.preserve_aspect_ratio
+        hints.aspect_ratio_width = u32(h.aspect_ratio_width)
+        hints.aspect_ratio_height = u32(h.aspect_ratio_height)
         return true
     },
     adjust_size = proc "c" (plugin: ^clap.plugin_t, width, height: ^u32) -> bool {
@@ -367,14 +349,13 @@ clap_extension_gui := clap.plugin_gui_t{
     set_size = proc "c" (plugin: ^clap.plugin_t, width, height: u32) -> bool {
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
-        sync.atomic_store(&plugin.window.size.x, f32(width))
-        sync.atomic_store(&plugin.window.size.y, f32(height))
+        plugin_gui_set_size(plugin, int(width), int(height))
         return true
     },
     set_parent = proc "c" (plugin: ^clap.plugin_t, window: ^clap.window_t) -> bool {
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
-        sync.atomic_store(&plugin.window.parent_handle, window.handle)
+        plugin_gui_set_parent(plugin, window.handle)
         return true
     },
     set_transient = proc "c" (plugin: ^clap.plugin_t, window: ^clap.window_t) -> bool {
@@ -385,16 +366,14 @@ clap_extension_gui := clap.plugin_gui_t{
     show = proc "c" (plugin: ^clap.plugin_t) -> bool {
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
-        // plugin.window.should_show = true
-        // gui_update(plugin)
-        return false
+        plugin_gui_show(plugin)
+        return true
     },
     hide = proc "c" (plugin: ^clap.plugin_t) -> bool {
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
-        // plugin.window.should_hide = true
-        // gui_update(plugin)
-        return false
+        plugin_gui_hide(plugin)
+        return true
     },
 }
 

@@ -1,5 +1,7 @@
 package main
 
+import "core:sync"
+import "core:thread"
 import "core:strings"
 import "clap"
 
@@ -19,14 +21,21 @@ Plugin_Window :: struct {
 
 Plugin :: struct {
     using base: Plugin_Base,
+
+    window: Plugin_Window,
+    gui_is_running: bool,
+    gui_thread: ^thread.Thread,
+
     sample_rate: f64,
     min_frames: int,
     max_frames: int,
-    // box: Rectangle,
-    // box_velocity: Vector2,
+
     gain_slider: Slider,
     test_text: strings.Builder,
     test_text_line: Editable_Text_Line,
+
+    // box: Rectangle,
+    // box_velocity: Vector2,
 }
 
 Parameter :: enum {
@@ -38,11 +47,15 @@ parameter_info := [len(Parameter)]clap.param_info_t{
 }
 
 plugin_init :: proc(plugin: ^Plugin) {
+    window_init(&plugin.window, {{0, 0}, {400, 300}})
+    plugin.window.child_kind = .Embedded
     plugin.window.plugin = plugin
     plugin.window.background_color = {0.2, 0.2, 0.2, 1}
+
     slider_init(&plugin.gain_slider)
     strings.builder_init(&plugin.test_text)
     editable_text_line_init(&plugin.test_text_line, &plugin.test_text)
+
     // plugin.box.size = {100, 50}
     // plugin.box_velocity = {10, 0}
 }
@@ -60,6 +73,63 @@ plugin_deactivate :: proc(plugin: ^Plugin) {}
 plugin_start_processing :: proc(plugin: ^Plugin) {}
 plugin_stop_processing :: proc(plugin: ^Plugin) {}
 
+plugin_gui_init :: proc(plugin: ^Plugin) {
+    plugin.gui_is_running = true
+    plugin.gui_thread = thread.create_and_start_with_data(plugin, proc(data: rawptr) {
+        plugin := cast(^Plugin)data
+        gui_startup()
+        defer gui_shutdown()
+        for {
+            if sync.atomic_load(&plugin.gui_is_running) {
+                if !plugin.window.is_open && plugin.window.parent_handle != nil {
+                    window_open(&plugin.window)
+                }
+            } else {
+                window_close(&plugin.window)
+            }
+            gui_update(&plugin.window)
+            poll_window_events()
+            free_all(context.temp_allocator)
+            if !plugin.gui_is_running && !plugin.window.is_open {
+                break
+            }
+        }
+        plugin.window.parent_handle = nil
+    }, self_cleanup = true)
+}
+
+plugin_gui_destroy :: proc(plugin: ^Plugin) {
+    sync.atomic_store(&plugin.gui_is_running, false)
+}
+
+plugin_gui_set_parent :: proc(plugin: ^Plugin, parent_handle: rawptr) {
+    sync.atomic_store(&plugin.window.parent_handle, parent_handle)
+}
+
+plugin_gui_size :: proc(plugin: ^Plugin) -> (width, height: int) {
+    width = int(sync.atomic_load(&plugin.window.size.x))
+    height = int(sync.atomic_load(&plugin.window.size.y))
+    return
+}
+
+plugin_gui_set_size :: proc(plugin: ^Plugin, width, height: int) {
+    sync.atomic_store(&plugin.window.size.x, f32(width))
+    sync.atomic_store(&plugin.window.size.y, f32(height))
+}
+
+plugin_gui_resize_hints :: proc(plugin: ^Plugin) -> Plugin_Gui_Resize_Hints {
+    return {
+        can_resize_horizontally = true,
+        can_resize_vertically = true,
+        preserve_aspect_ratio = false,
+        aspect_ratio_width = 0,
+        aspect_ratio_height = 0,
+    }
+}
+
+plugin_gui_show :: proc(plugin: ^Plugin) {}
+plugin_gui_hide :: proc(plugin: ^Plugin) {}
+
 gui_update :: proc(window: ^Window) {
     window := cast(^Plugin_Window)window
     plugin := window.plugin
@@ -69,10 +139,6 @@ gui_update :: proc(window: ^Window) {
         set_parameter(plugin, .Gain, f64(gain))
 
         editable_text_line_update(&plugin.test_text_line, {{10, 100}, {100, 32}}, default_font)
-
-        // if mouse_pressed(.Left) {
-        //     println(window.is_focused)
-        // }
 
         if mouse_pressed(.Right) {
             window_focus(window)
