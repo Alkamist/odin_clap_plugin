@@ -69,10 +69,10 @@ backend_shutdown :: proc() {
     _pugl_world = nil
 }
 
-backend_poll_window_events :: proc() {
+backend_poll_window_events :: proc(frame_time: f32) {
     _pugl_odin_context = context
     if _pugl_world == nil do return
-    pugl.Update(_pugl_world, 0)
+    pugl.Update(_pugl_world, f64(frame_time))
 }
 
 backend_window_init :: proc(window: ^Window, rectangle: Rectangle) {
@@ -387,9 +387,9 @@ _pugl_event_proc :: proc "c" (view: ^pugl.View, event: ^pugl.Event) -> pugl.Stat
         size := Vector2{f32(event.width), f32(event.height)}
         refresh := size != window.actual_rectangle.size
         input_window_resize(window, size)
-        if window.child_kind != .Embedded && refresh {
-            gui_update(window)
-        }
+        // if window.child_kind != .Embedded && refresh {
+        //     gui_update(window)
+        // }
 
     case .POINTER_IN:
         input_mouse_enter(window)
@@ -406,35 +406,35 @@ _pugl_event_proc :: proc "c" (view: ^pugl.View, event: ^pugl.Event) -> pugl.Stat
     case .MOTION:
         event := event.motion
         input_mouse_move(window, {f32(event.x), f32(event.y)})
-        gui_update(window)
+        // gui_update(window)
 
     case .SCROLL:
         event := &event.scroll
         input_mouse_scroll(window, {f32(event.dx), f32(event.dy)})
-        gui_update(window)
+        // gui_update(window)
 
     case .BUTTON_PRESS:
         event := &event.button
         input_mouse_press(window, _pugl_button_to_mouse_button(event.button))
-        gui_update(window)
+        // gui_update(window)
 
     case .BUTTON_RELEASE:
         event := &event.button
         input_mouse_release(window, _pugl_button_to_mouse_button(event.button))
-        gui_update(window)
+        // gui_update(window)
 
     case .KEY_PRESS:
         if window.is_focused {
             event := &event.key
             input_key_press(window, _pugl_key_event_to_keyboard_key(event))
-            gui_update(window)
+            // gui_update(window)
         }
 
     case .KEY_RELEASE:
         if window.is_focused {
             event := &event.key
             input_key_release(window, _pugl_key_event_to_keyboard_key(event))
-            gui_update(window)
+            // gui_update(window)
         }
 
     case .TEXT:
@@ -449,7 +449,7 @@ _pugl_event_proc :: proc "c" (view: ^pugl.View, event: ^pugl.Event) -> pugl.Stat
         if !skip {
             r, len := utf8.decode_rune(event.string[:4])
             input_rune(window, r)
-            gui_update(window)
+            // gui_update(window)
         }
 
     case .CLOSE:

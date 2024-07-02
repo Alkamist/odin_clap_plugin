@@ -6,7 +6,6 @@ import "core:strings"
 import "clap"
 
 // Figure out parameter smoothing
-// Figure out FPS limit
 
 default_font := Font{
     name = "consola_13",
@@ -34,8 +33,8 @@ Plugin :: struct {
     test_text: strings.Builder,
     test_text_line: Editable_Text_Line,
 
-    // box: Rectangle,
-    // box_velocity: Vector2,
+    box: Rectangle,
+    box_velocity: Vector2,
 }
 
 Parameter :: enum {
@@ -56,8 +55,8 @@ plugin_init :: proc(plugin: ^Plugin) {
     strings.builder_init(&plugin.test_text)
     editable_text_line_init(&plugin.test_text_line, &plugin.test_text)
 
-    // plugin.box.size = {100, 50}
-    // plugin.box_velocity = {10, 0}
+    plugin.box.size = {100, 50}
+    plugin.box_velocity = {1500, 0}
 }
 
 plugin_destroy :: proc(plugin: ^Plugin) {}
@@ -88,7 +87,7 @@ plugin_gui_init :: proc(plugin: ^Plugin) {
                 window_close(&plugin.window)
             }
             gui_update(&plugin.window)
-            poll_window_events()
+            poll_window_events(1.0 / 240.0)
             free_all(context.temp_allocator)
             if !plugin.gui_is_running && !plugin.window.is_open {
                 break
@@ -134,6 +133,15 @@ gui_update :: proc(window: ^Window) {
     window := cast(^Plugin_Window)window
     plugin := window.plugin
     if window_update(window) {
+        if plugin.box.x < 0 {
+            plugin.box_velocity.x = 1500
+        }
+        if plugin.box.x + plugin.box.size.x > plugin.window.size.x {
+            plugin.box_velocity.x = -1500
+        }
+        plugin.box.position += plugin.box_velocity * delta_time()
+        fill_rounded_rectangle(plugin.box, 3, {1, 0, 0, 1})
+
         gain := f32(parameter(plugin, .Gain))
         slider_update(&plugin.gain_slider, &gain, {{10, 10}, {200, 32}})
         set_parameter(plugin, .Gain, f64(gain))
@@ -147,7 +155,7 @@ gui_update :: proc(window: ^Window) {
             window_native_focus(window.parent_handle)
         }
 
-        if key_pressed(.A, respect_focus = false) {
+        if key_pressed(.A, respect_focus = false, repeat = true) {
             println("A Pressed")
         }
         if key_released(.A, respect_focus = false) {
@@ -161,23 +169,6 @@ gui_update :: proc(window: ^Window) {
         }
     }
 }
-
-// gui_update :: proc(user_data: rawptr) {
-//     plugin := cast(^Plugin)user_data
-//     if window_update(&plugin.window) {
-//         if plugin.box.x < 0 {
-//             plugin.box_velocity.x = 10
-//         }
-//         if plugin.box.x + plugin.box.size.x > plugin.window.size.x {
-//             plugin.box_velocity.x = -10
-//         }
-//         plugin.box.position += plugin.box_velocity
-//         fill_rounded_rectangle(plugin.box, 3, {1, 0, 0, 1})
-//         if key_pressed(.A) {
-//             println(cast(rawptr)plugin)
-//         }
-//     }
-// }
 
 milliseconds_to_samples :: proc "c" (plugin: ^Plugin, milliseconds: f64) -> int {
     return int(plugin.sample_rate * milliseconds * 0.001)

@@ -179,6 +179,10 @@ is_first_frame :: proc() -> bool {
 clipboard :: backend_clipboard
 set_clipboard :: backend_set_clipboard
 
+delta_time :: proc() -> f32 {
+    return current_window().delta_time
+}
+
 mouse_position :: proc() -> (res: Vector2) {
     window := current_window()
     res = window.mouse_position
@@ -251,7 +255,7 @@ any_mouse_released :: proc() -> bool {
 
 key_pressed :: proc(key: Keyboard_Key, respect_focus := true, repeat := false) -> bool {
     window := current_window()
-    if respect_focus {
+    if respect_focus || window.is_focused {
         return slice.contains(window.key_presses_focus_respected[:], key) ||
                repeat && slice.contains(window.key_repeats_focus_respected[:], key)
     } else {
@@ -262,7 +266,7 @@ key_pressed :: proc(key: Keyboard_Key, respect_focus := true, repeat := false) -
 
 key_released :: proc(key: Keyboard_Key, respect_focus := true) -> bool {
     window := current_window()
-    if respect_focus {
+    if respect_focus || window.is_focused {
         return slice.contains(window.key_releases_focus_respected[:], key)
     } else {
         return slice.contains(window.key_releases[:], key)
@@ -279,7 +283,7 @@ any_key_released :: proc(respect_focus := true) -> bool {
 
 key_presses :: proc(respect_focus := true, repeat := false) -> []Keyboard_Key {
     window := current_window()
-    if respect_focus {
+    if respect_focus || window.is_focused {
         if repeat {
             return window.key_repeats_focus_respected[:]
         } else {
@@ -296,7 +300,7 @@ key_presses :: proc(respect_focus := true, repeat := false) -> []Keyboard_Key {
 
 key_releases :: proc(respect_focus := true) -> []Keyboard_Key {
     window := current_window()
-    if respect_focus {
+    if respect_focus || window.is_focused {
         return window.key_releases_focus_respected[:]
     } else {
         return window.key_releases[:]
@@ -352,6 +356,9 @@ Window_Base :: struct {
     is_focused: bool,
     is_mouse_hovered: bool,
     is_first_frame: bool,
+
+    delta_time: f32,
+    previous_tick: time.Tick,
 
     content_scale: Vector2,
 
@@ -409,7 +416,12 @@ window_begin :: proc(window: ^Window) -> bool {
     if window.is_first_frame {
         window.actual_rectangle = window.rectangle
         window.previous_mouse_position = window.mouse_position
+        window.previous_tick = time.tick_now()
     }
+
+    current_tick := time.tick_now()
+    window.delta_time = f32(time.duration_seconds(time.tick_diff(window.previous_tick, current_tick)))
+    window.previous_tick = current_tick
 
     if window.is_open {
         window.open_requested = false
