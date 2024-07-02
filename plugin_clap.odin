@@ -106,33 +106,68 @@ clap_plugin_process :: proc "c" (plugin: ^clap.plugin_t, process: ^clap.process_
 
     frame_count := process.frames_count
     event_count := process.in_events->size()
-    event_index: u32 = 0
+
+    gain: [1024]f64
+    previous_gain_value := parameter(plugin, .Gain)
+    previous_gain_frame := 0
+
+    for i in 1 ..< event_count {
+        event_header := process.in_events->get(i)
+        if event_header.space_id == clap.CORE_EVENT_SPACE_ID {
+            // clap_dispatch_parameter_event(plugin, event_header)
+            #partial switch event_header.type {
+            case .PARAM_VALUE:
+                clap_event := cast(^clap.event_param_value_t)event_header
+                sync.atomic_store(&plugin.parameter_values[Parameter(clap_event.param_id)], clap_event.value)
+                if Parameter(clap_event.param_id) == .Gain {
+                    increment := (clap_event.value - previous_gain_value) / f64(int(clap_event.header.time) - previous_gain_frame)
+                    for j in previous_gain_frame ..= int(clap_event.header.time) {
+                        gain[j] = previous_gain_value + increment * f64(j - previous_gain_frame)
+                    }
+                    previous_gain_value = clap_event.value
+                    previous_gain_frame = int(clap_event.header.time)
+                }
+            }
+        }
+    }
 
     for frame in 0 ..< frame_count {
-        for event_index < event_count {
-            event_header := process.in_events->get(event_index)
-            if event_header.time != frame {
-                break
-            }
-
-            if event_header.space_id == clap.CORE_EVENT_SPACE_ID {
-                clap_dispatch_parameter_event(plugin, event_header)
-            }
-
-            event_index += 1
-        }
-
-        gain := parameter(plugin, .Gain)
-
         in_l := process.audio_inputs[0].data64[0][frame]
         in_r := process.audio_inputs[0].data64[1][frame]
 
-        out_l := in_l * gain
-        out_r := in_r * gain
+        out_l := in_l * gain[frame]
+        out_r := in_r * gain[frame]
 
         process.audio_outputs[0].data64[0][frame] = out_l
         process.audio_outputs[0].data64[1][frame] = out_r
     }
+
+    // for frame in 0 ..< frame_count {
+    //     for event_index < event_count {
+    //         event_header := process.in_events->get(event_index)
+    //         if event_header.time != frame {
+    //             break
+    //         }
+
+    //         if event_header.space_id == clap.CORE_EVENT_SPACE_ID {
+    //             clap_dispatch_parameter_event(plugin, event_header)
+    //         }
+
+    //         event_index += 1
+    //     }
+
+    //     // smoothing := f64(frame) / f64(frame_count)
+    //     // gain := parameter(plugin, .Gain) * smoothing
+
+    //     // in_l := process.audio_inputs[0].data64[0][frame]
+    //     // in_r := process.audio_inputs[0].data64[1][frame]
+
+    //     // out_l := in_l * gain
+    //     // out_r := in_r * gain
+
+    //     // process.audio_outputs[0].data64[0][frame] = out_l
+    //     // process.audio_outputs[0].data64[1][frame] = out_r
+    // }
 
     // Sort and send output events, then clear the buffer.
     sync.lock(&plugin.output_event_mutex)

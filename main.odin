@@ -5,7 +5,10 @@ import "core:thread"
 import "core:strings"
 import "clap"
 
-// Figure out parameter smoothing
+// Parameter smoothing
+// Parameter gesture begin/end
+// Fix crash when deactivating plugin
+// State saving
 
 default_font := Font{
     name = "consola_13",
@@ -148,25 +151,25 @@ gui_update :: proc(window: ^Window) {
 
         editable_text_line_update(&plugin.test_text_line, {{10, 100}, {100, 32}}, default_font)
 
-        if mouse_pressed(.Right) {
-            window_focus(window)
-        }
-        if mouse_pressed(.Middle) {
-            window_native_focus(window.parent_handle)
-        }
+        // if mouse_pressed(.Right) {
+        //     window_focus(window)
+        // }
+        // if mouse_pressed(.Middle) {
+        //     window_native_focus(window.parent_handle)
+        // }
 
-        if key_pressed(.A, respect_focus = false, repeat = true) {
-            println("A Pressed")
-        }
-        if key_released(.A, respect_focus = false) {
-            println("A Released")
-        }
-        if key_pressed(.B, respect_focus = true, repeat = true) {
-            println("B Pressed")
-        }
-        if key_released(.B, respect_focus = true) {
-            println("B Released")
-        }
+        // if key_pressed(.A, respect_focus = false, repeat = true) {
+        //     println("A Pressed")
+        // }
+        // if key_released(.A, respect_focus = false) {
+        //     println("A Released")
+        // }
+        // if key_pressed(.B, respect_focus = true, repeat = true) {
+        //     println("B Pressed")
+        // }
+        // if key_released(.B, respect_focus = true) {
+        //     println("B Released")
+        // }
     }
 }
 

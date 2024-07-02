@@ -1836,8 +1836,6 @@ editable_text_line_update :: proc(
 
     for key in key_presses(respect_focus = true, repeat = true) {
         #partial switch key {
-        // case .Escape: release_keyboard_focus()
-
         case .A: if ctrl do cte.perform_command(edit_state, .Select_All)
         case .C: if ctrl do cte.perform_command(edit_state, .Copy)
         case .V: if ctrl do cte.perform_command(edit_state, .Paste)
