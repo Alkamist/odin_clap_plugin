@@ -77,7 +77,6 @@ backend_poll_window_events :: proc() {
 
 backend_window_init :: proc(window: ^Window, rectangle: Rectangle) {
     window.rectangle = rectangle
-    window.should_open = true
     window.dark_mode = true
     window.is_visible = true
     window.is_resizable = true
@@ -161,7 +160,6 @@ backend_window_open :: proc(window: ^Window) {
     }
     window.view = view
 
-    pugl.GrabFocus(view)
     pugl.EnterContext(view)
 
     if !_open_gl_is_loaded {
@@ -354,8 +352,18 @@ _pugl_event_proc :: proc "c" (view: ^pugl.View, event: ^pugl.Event) -> pugl.Stat
     context = _pugl_odin_context
 
     #partial switch event.type {
-    // case .UPDATE:
-    //     pugl.PostRedisplay(view)
+    case .UPDATE:
+        for key in Keyboard_Key {
+            is_down := backend_poll_key_state(key)
+            if !window.is_focused {
+                if is_down && !window.key_down[key] {
+                    input_key_press(window, key)
+                } else if !is_down && window.key_down[key] {
+                    input_key_release(window, key)
+                }
+            }
+            window.key_down[key] = is_down
+        }
 
     // case .LOOP_ENTER:
     //     pugl.StartTimer(view, window.timer_id, 0)
@@ -416,14 +424,18 @@ _pugl_event_proc :: proc "c" (view: ^pugl.View, event: ^pugl.Event) -> pugl.Stat
         gui_update(window)
 
     case .KEY_PRESS:
-        event := &event.key
-        input_key_press(window, _pugl_key_event_to_keyboard_key(event))
-        gui_update(window)
+        if window.is_focused {
+            event := &event.key
+            input_key_press(window, _pugl_key_event_to_keyboard_key(event))
+            gui_update(window)
+        }
 
     case .KEY_RELEASE:
-        event := &event.key
-        input_key_release(window, _pugl_key_event_to_keyboard_key(event))
-        gui_update(window)
+        if window.is_focused {
+            event := &event.key
+            input_key_release(window, _pugl_key_event_to_keyboard_key(event))
+            gui_update(window)
+        }
 
     case .TEXT:
         event := &event.text
@@ -441,7 +453,7 @@ _pugl_event_proc :: proc "c" (view: ^pugl.View, event: ^pugl.Event) -> pugl.Stat
         }
 
     case .CLOSE:
-        window.should_close = true
+        window.close_requested = true
     }
 
     return .SUCCESS
@@ -594,4 +606,141 @@ _cursor_style_to_pugl_cursor :: proc(style: Mouse_Cursor_Style) -> pugl.Cursor {
     case .Scroll: return .ALL_SCROLL
     }
     return .ARROW
+}
+
+//==========================================================================
+// Windows Specific Code
+//==========================================================================
+
+import win32 "core:sys/windows"
+
+when ODIN_OS == .Windows {
+    foreign import user32 "system:User32.lib"
+
+    @(default_calling_convention="system")
+    foreign user32 {
+        SetFocus :: proc(hWnd: win32.HWND) -> win32.HWND ---
+        GetFocus :: proc() -> win32.HWND ---
+    }
+
+    backend_window_focus :: proc(window: ^Window) {
+        SetFocus(cast(win32.HWND)pugl.GetNativeView(window.view))
+    }
+
+    backend_window_native_focus :: proc(native_handle: rawptr) {
+        SetFocus(cast(win32.HWND)native_handle)
+    }
+
+    backend_poll_key_state :: proc(key: Keyboard_Key) -> bool {
+        return win32.GetAsyncKeyState(_keyboard_key_to_win32_vk(key)) != 0
+    }
+
+    _keyboard_key_to_win32_vk :: proc(key: Keyboard_Key) -> c.int {
+        #partial switch key {
+            case .A: return win32.VK_A
+            case .B: return win32.VK_B
+            case .C: return win32.VK_C
+            case .D: return win32.VK_D
+            case .E: return win32.VK_E
+            case .F: return win32.VK_F
+            case .G: return win32.VK_G
+            case .H: return win32.VK_H
+            case .I: return win32.VK_I
+            case .J: return win32.VK_J
+            case .K: return win32.VK_K
+            case .L: return win32.VK_L
+            case .M: return win32.VK_M
+            case .N: return win32.VK_N
+            case .O: return win32.VK_O
+            case .P: return win32.VK_P
+            case .Q: return win32.VK_Q
+            case .R: return win32.VK_R
+            case .S: return win32.VK_S
+            case .T: return win32.VK_T
+            case .U: return win32.VK_U
+            case .V: return win32.VK_V
+            case .W: return win32.VK_W
+            case .X: return win32.VK_X
+            case .Y: return win32.VK_Y
+            case .Z: return win32.VK_Z
+            case .Key_1: return win32.VK_1
+            case .Key_2: return win32.VK_2
+            case .Key_3: return win32.VK_3
+            case .Key_4: return win32.VK_4
+            case .Key_5: return win32.VK_5
+            case .Key_6: return win32.VK_6
+            case .Key_7: return win32.VK_7
+            case .Key_8: return win32.VK_8
+            case .Key_9: return win32.VK_9
+            case .Key_0: return win32.VK_0
+            case .Pad_1: return win32.VK_NUMPAD1
+            case .Pad_2: return win32.VK_NUMPAD2
+            case .Pad_3: return win32.VK_NUMPAD3
+            case .Pad_4: return win32.VK_NUMPAD4
+            case .Pad_5: return win32.VK_NUMPAD5
+            case .Pad_6: return win32.VK_NUMPAD6
+            case .Pad_7: return win32.VK_NUMPAD7
+            case .Pad_8: return win32.VK_NUMPAD8
+            case .Pad_9: return win32.VK_NUMPAD9
+            case .Pad_0: return win32.VK_NUMPAD0
+            case .F1: return win32.VK_F1
+            case .F2: return win32.VK_F2
+            case .F3: return win32.VK_F3
+            case .F4: return win32.VK_F4
+            case .F5: return win32.VK_F5
+            case .F6: return win32.VK_F6
+            case .F7: return win32.VK_F7
+            case .F8: return win32.VK_F8
+            case .F9: return win32.VK_F9
+            case .F10: return win32.VK_F10
+            case .F11: return win32.VK_F11
+            case .F12: return win32.VK_F12
+            case .Backtick: return win32.VK_OEM_3
+            case .Minus: return win32.VK_OEM_MINUS
+            case .Equal: return win32.VK_OEM_PLUS
+            case .Backspace: return win32.VK_BACK
+            case .Tab: return win32.VK_TAB
+            case .Caps_Lock: return win32.VK_CAPITAL
+            case .Enter: return win32.VK_RETURN
+            case .Left_Shift: return win32.VK_LSHIFT
+            case .Right_Shift: return win32.VK_RSHIFT
+            case .Left_Control: return win32.VK_LCONTROL
+            case .Right_Control: return win32.VK_RCONTROL
+            case .Left_Alt: return win32.VK_LMENU
+            case .Right_Alt: return win32.VK_RMENU
+            case .Left_Meta: return win32.VK_LWIN
+            case .Right_Meta: return win32.VK_RWIN
+            case .Left_Bracket: return win32.VK_OEM_4
+            case .Right_Bracket: return win32.VK_OEM_6
+            case .Space: return win32.VK_SPACE
+            case .Escape: return win32.VK_ESCAPE
+            case .Backslash: return win32.VK_OEM_5
+            case .Semicolon: return win32.VK_OEM_1
+            case .Apostrophe: return win32.VK_OEM_7
+            case .Comma: return win32.VK_OEM_COMMA
+            case .Period: return win32.VK_OEM_PERIOD
+            case .Slash: return win32.VK_OEM_2
+            case .Scroll_Lock: return win32.VK_SCROLL
+            case .Pause: return win32.VK_PAUSE
+            case .Insert: return win32.VK_INSERT
+            case .End: return win32.VK_END
+            case .Page_Up: return win32.VK_PRIOR
+            case .Delete: return win32.VK_DELETE
+            case .Home: return win32.VK_HOME
+            case .Page_Down: return win32.VK_NEXT
+            case .Left_Arrow: return win32.VK_LEFT
+            case .Right_Arrow: return win32.VK_RIGHT
+            case .Down_Arrow: return win32.VK_DOWN
+            case .Up_Arrow: return win32.VK_UP
+            case .Num_Lock: return win32.VK_NUMLOCK
+            case .Pad_Divide: return win32.VK_DIVIDE
+            case .Pad_Multiply: return win32.VK_MULTIPLY
+            case .Pad_Subtract: return win32.VK_SUBTRACT
+            case .Pad_Add: return win32.VK_ADD
+            case .Pad_Enter: return win32.VK_RETURN
+            case .Pad_Decimal: return win32.VK_DECIMAL
+            case .Print_Screen: return win32.VK_PRINT
+        }
+        return 0
+    }
 }

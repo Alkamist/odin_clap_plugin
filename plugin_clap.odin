@@ -58,7 +58,6 @@ clap_plugin_init :: proc "c" (plugin: ^clap.plugin_t) -> bool {
     plugin := cast(^Plugin)(plugin.plugin_data)
 
     window_init(&plugin.window, {{0, 0}, {400, 300}})
-    plugin.window.should_open = false
     plugin.window.child_kind = .Embedded
 
     plugin_init(plugin)
@@ -323,10 +322,10 @@ clap_extension_gui := clap.plugin_gui_t{
             for {
                 if sync.atomic_load(&plugin.gui_is_running) {
                     if !plugin.window.is_open && plugin.window.parent_handle != nil {
-                        plugin.window.should_open = true
+                        window_open(&plugin.window)
                     }
                 } else {
-                    plugin.window.should_close = true
+                    window_close(&plugin.window)
                 }
                 gui_update(&plugin.window)
                 poll_window_events()

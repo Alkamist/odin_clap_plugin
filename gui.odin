@@ -92,7 +92,7 @@ input_lose_focus :: proc(window: ^Window) {
     }
     for key in Keyboard_Key {
         if window.key_down[key] {
-            input_key_release(window, key)
+            append(&window.key_releases_focus_respected, key)
         }
     }
 }
@@ -146,16 +146,26 @@ input_mouse_scroll :: proc(window: ^Window, amount: Vector2) {
 
 input_key_press :: proc(window: ^Window, key: Keyboard_Key) {
     already_down := window.key_down[key]
-    window.key_down[key] = true
+
     if !already_down {
         append(&window.key_presses, key)
     }
     append(&window.key_repeats, key)
+
+    if window.is_focused {
+        if !already_down {
+            append(&window.key_presses_focus_respected, key)
+        }
+        append(&window.key_repeats_focus_respected, key)
+    }
 }
 
 input_key_release :: proc(window: ^Window, key: Keyboard_Key) {
-    window.key_down[key] = false
     append(&window.key_releases, key)
+
+    if window.is_focused {
+        append(&window.key_releases_focus_respected, key)
+    }
 }
 
 input_rune :: proc(window: ^Window, r: rune) {
@@ -198,8 +208,13 @@ mouse_down :: proc(button: Mouse_Button) -> bool {
     return current_window().mouse_down[button]
 }
 
-key_down :: proc(key: Keyboard_Key) -> bool {
-    return current_window().key_down[key]
+key_down :: proc(key: Keyboard_Key, respect_focus := true) -> bool {
+    window := current_window()
+    if respect_focus {
+        return window.key_down[key] && window.is_focused
+    } else {
+        return window.key_down[key]
+    }
 }
 
 mouse_wheel :: proc() -> Vector2 {
@@ -234,38 +249,58 @@ any_mouse_released :: proc() -> bool {
     return len(current_window().mouse_releases) > 0
 }
 
-key_pressed :: proc(key: Keyboard_Key, repeating := false) -> bool {
+key_pressed :: proc(key: Keyboard_Key, respect_focus := true, repeat := false) -> bool {
     window := current_window()
-    return slice.contains(window.key_presses[:], key) ||
-           repeating && slice.contains(window.key_repeats[:], key)
-}
-
-key_released :: proc(key: Keyboard_Key) -> bool {
-    return slice.contains(current_window().key_releases[:], key)
-}
-
-any_key_pressed :: proc(repeating := false) -> bool {
-    if repeating {
-        return len(current_window().key_repeats) > 0
+    if respect_focus {
+        return slice.contains(window.key_presses_focus_respected[:], key) ||
+               repeat && slice.contains(window.key_repeats_focus_respected[:], key)
     } else {
-        return len(current_window().key_presses) > 0
+        return slice.contains(window.key_presses[:], key) ||
+               repeat && slice.contains(window.key_repeats[:], key)
     }
 }
 
-any_key_released :: proc() -> bool {
-    return len(current_window().key_releases) > 0
-}
-
-key_presses :: proc(repeating := false) -> []Keyboard_Key {
-    if repeating {
-        return current_window().key_repeats[:]
+key_released :: proc(key: Keyboard_Key, respect_focus := true) -> bool {
+    window := current_window()
+    if respect_focus {
+        return slice.contains(window.key_releases_focus_respected[:], key)
     } else {
-        return current_window().key_presses[:]
+        return slice.contains(window.key_releases[:], key)
     }
 }
 
-key_releases :: proc() -> []Keyboard_Key {
-    return current_window().key_releases[:]
+any_key_pressed :: proc(respect_focus := true, repeat := false) -> bool {
+    return len(key_presses(respect_focus, repeat)) > 0
+}
+
+any_key_released :: proc(respect_focus := true) -> bool {
+    return len(key_releases(respect_focus)) > 0
+}
+
+key_presses :: proc(respect_focus := true, repeat := false) -> []Keyboard_Key {
+    window := current_window()
+    if respect_focus {
+        if repeat {
+            return window.key_repeats_focus_respected[:]
+        } else {
+            return window.key_presses_focus_respected[:]
+        }
+    } else {
+        if repeat {
+            return window.key_repeats[:]
+        } else {
+            return window.key_presses[:]
+        }
+    }
+}
+
+key_releases :: proc(respect_focus := true) -> []Keyboard_Key {
+    window := current_window()
+    if respect_focus {
+        return window.key_releases_focus_respected[:]
+    } else {
+        return window.key_releases[:]
+    }
 }
 
 text_input :: proc() -> string {
@@ -298,11 +333,13 @@ Window_Base :: struct {
 
     key_down: [Keyboard_Key]bool,
     key_presses: [dynamic]Keyboard_Key,
+    key_presses_focus_respected: [dynamic]Keyboard_Key,
     key_repeats: [dynamic]Keyboard_Key,
+    key_repeats_focus_respected: [dynamic]Keyboard_Key,
     key_releases: [dynamic]Keyboard_Key,
+    key_releases_focus_respected: [dynamic]Keyboard_Key,
     text_input: strings.Builder,
 
-    keyboard_focus: Id,
     mouse_hit: Id,
     mouse_hover: Id,
     previous_mouse_hover: Id,
@@ -310,8 +347,8 @@ Window_Base :: struct {
     final_mouse_hover_request: Id,
 
     is_open: bool,
-    should_open: bool,
-    should_close: bool,
+    open_requested: bool,
+    close_requested: bool,
     is_focused: bool,
     is_mouse_hovered: bool,
     is_first_frame: bool,
@@ -343,15 +380,18 @@ window_init :: proc(window: ^Window, rectangle: Rectangle) {
 }
 
 window_destroy :: proc(window: ^Window) {
-    _window_close(window)
+    _window_do_close(window)
     backend_window_destroy(window)
     delete(window.child_windows)
     delete(window.loaded_fonts)
     delete(window.mouse_presses)
     delete(window.mouse_releases)
     delete(window.key_presses)
+    delete(window.key_presses_focus_respected)
     delete(window.key_repeats)
+    delete(window.key_repeats_focus_respected)
     delete(window.key_releases)
+    delete(window.key_releases_focus_respected)
     strings.builder_destroy(&window.text_input)
 }
 
@@ -372,7 +412,7 @@ window_begin :: proc(window: ^Window) -> bool {
     }
 
     if window.is_open {
-        window.should_open = false
+        window.open_requested = false
         backend_activate_gl_context(window)
         if parent != nil {
             append(&parent.child_windows, window)
@@ -415,8 +455,11 @@ window_end :: proc() {
     clear(&window.mouse_presses)
     clear(&window.mouse_releases)
     clear(&window.key_presses)
+    clear(&window.key_presses_focus_respected)
     clear(&window.key_repeats)
+    clear(&window.key_repeats_focus_respected)
     clear(&window.key_releases)
+    clear(&window.key_releases_focus_respected)
     strings.builder_reset(&window.text_input)
 
     if window.is_open && window.position != window.actual_rectangle.position {
@@ -428,11 +471,11 @@ window_end :: proc() {
         backend_window_set_size(window, window.size)
     }
 
-    if window.should_open {
-        _window_open(window)
+    if window.open_requested {
+        _window_do_open(window)
     }
-    if window.should_close {
-        _window_close(window)
+    if window.close_requested {
+        _window_do_close(window)
     }
 
     if window.is_open {
@@ -452,18 +495,29 @@ window_update :: proc(window: ^Window) -> bool {
     return window_begin(window)
 }
 
-_window_open :: proc(window: ^Window) {
+window_focus :: backend_window_focus
+window_native_focus :: backend_window_native_focus
+
+window_open :: proc(window: ^Window) {
+    window.open_requested = true
+}
+
+window_close :: proc(window: ^Window) {
+    window.close_requested = true
+}
+
+_window_do_open :: proc(window: ^Window) {
     if !window.is_open {
         backend_window_open(window)
         backend_activate_gl_context(window)
         window.is_open = true
-        window.should_open = false
+        window.open_requested = false
     }
 }
 
-_window_close :: proc(window: ^Window) {
+_window_do_close :: proc(window: ^Window) {
     for child in window.child_windows {
-        _window_close(child)
+        _window_do_close(child)
     }
 
     if window.is_open {
@@ -471,7 +525,7 @@ _window_close :: proc(window: ^Window) {
         backend_window_close(window)
         clear(&window.loaded_fonts)
         window.is_open = false
-        window.should_close = false
+        window.close_requested = false
     }
 }
 
@@ -754,18 +808,6 @@ capture_mouse_hover :: proc() {
 
 release_mouse_hover :: proc() {
     current_window().mouse_hover_capture = 0
-}
-
-keyboard_focus :: proc() -> Id {
-    return current_window().keyboard_focus
-}
-
-set_keyboard_focus :: proc(id: Id) {
-    current_window().keyboard_focus = id
-}
-
-release_keyboard_focus :: proc() {
-    current_window().keyboard_focus = 0
 }
 
 hit_test :: proc(rectangle: Rectangle, target: Vector2) -> bool {
@@ -1611,8 +1653,8 @@ slider_update :: proc(
     reset_grab_info := false
 
     if slider.held {
-        if key_pressed(precision_key) ||
-           key_released(precision_key) {
+        if key_pressed(precision_key, respect_focus = false) ||
+           key_released(precision_key, respect_focus = false) {
             reset_grab_info = true
         }
     }
@@ -1629,7 +1671,7 @@ slider_update :: proc(
     }
 
     if slider.held {
-        sensitivity: f32 = key_down(precision_key) ? 0.15 : 1.0
+        sensitivity: f32 = key_down(precision_key, respect_focus = false) ? 0.15 : 1.0
         global_mouse_position := global_mouse_position()
         grab_delta := global_mouse_position.x - slider.global_mouse_position_when_grabbed.x
         value^ = slider.value_when_grabbed + sensitivity * grab_delta * (max_value - min_value) / (rectangle.size.x - HANDLE_LENGTH)
@@ -1780,9 +1822,9 @@ editable_text_line_update :: proc(
     ctrl := key_down(.Left_Control) || key_down(.Right_Control)
     shift := key_down(.Left_Shift) || key_down(.Right_Shift)
 
-    for key in key_presses(repeating = true) {
+    for key in key_presses(respect_focus = true, repeat = true) {
         #partial switch key {
-        case .Escape: release_keyboard_focus()
+        // case .Escape: release_keyboard_focus()
 
         case .A: if ctrl do cte.perform_command(edit_state, .Select_All)
         case .C: if ctrl do cte.perform_command(edit_state, .Copy)
@@ -1955,6 +1997,9 @@ editable_text_line_update :: proc(
     }
 
     // Draw caret.
+    rectangle_extended_by_caret_width := rectangle
+    rectangle_extended_by_caret_width.size.x += CARET_WIDTH
+    scoped_clip(rectangle_extended_by_caret_width)
     fill_rectangle({text_position + {caret_x, 0}, {CARET_WIDTH, text_size.y}}, {0.7, 0.9, 1, 1})
 }
 
