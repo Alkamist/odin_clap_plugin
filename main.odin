@@ -5,8 +5,7 @@ import "core:thread"
 import "core:strings"
 import "clap"
 
-// Parameter smoothing
-// Parameter gesture begin/end
+// Send parameter gestures to clap
 // Fix crash when deactivating plugin
 // State saving
 
@@ -32,7 +31,7 @@ Plugin :: struct {
     min_frames: int,
     max_frames: int,
 
-    gain_slider: Slider,
+    gain_slider: Parameter_Slider,
     test_text: strings.Builder,
     test_text_line: Editable_Text_Line,
 
@@ -40,11 +39,11 @@ Plugin :: struct {
     box_velocity: Vector2,
 }
 
-Parameter :: enum {
+Parameter_Id :: enum {
     Gain,
 }
 
-parameter_info := [len(Parameter)]clap.param_info_t{
+parameter_info := [len(Parameter_Id)]clap.param_info_t{
     clap_param_info(.Gain, "Gain", 0, 1, 0.5, {.IS_AUTOMATABLE}),
 }
 
@@ -54,10 +53,11 @@ plugin_init :: proc(plugin: ^Plugin) {
     plugin.window.plugin = plugin
     plugin.window.background_color = {0.2, 0.2, 0.2, 1}
 
-    slider_init(&plugin.gain_slider)
+    parameter_slider_init(&plugin.gain_slider)
     strings.builder_init(&plugin.test_text)
     editable_text_line_init(&plugin.test_text_line, &plugin.test_text)
 
+    plugin.box.position.y = 150
     plugin.box.size = {100, 50}
     plugin.box_velocity = {1500, 0}
 }
@@ -66,9 +66,9 @@ plugin_destroy :: proc(plugin: ^Plugin) {}
 plugin_reset :: proc(plugin: ^Plugin) {}
 
 plugin_activate :: proc(plugin: ^Plugin, sample_rate: f64, min_frames, max_frames: int) {
-    plugin.sample_rate = sample_rate
-    plugin.min_frames = min_frames
-    plugin.max_frames = max_frames
+    sync.atomic_store(&plugin.sample_rate, sample_rate)
+    sync.atomic_store(&plugin.min_frames, min_frames)
+    sync.atomic_store(&plugin.max_frames, max_frames)
 }
 
 plugin_deactivate :: proc(plugin: ^Plugin) {}
@@ -145,10 +145,7 @@ gui_update :: proc(window: ^Window) {
         plugin.box.position += plugin.box_velocity * delta_time()
         fill_rounded_rectangle(plugin.box, 3, {1, 0, 0, 1})
 
-        gain := f32(parameter(plugin, .Gain))
-        slider_update(&plugin.gain_slider, &gain, {{10, 10}, {200, 32}})
-        set_parameter(plugin, .Gain, f64(gain))
-
+        parameter_slider_update(&plugin.gain_slider, plugin, .Gain, {{10, 10}, {200, 32}})
         editable_text_line_update(&plugin.test_text_line, {{10, 100}, {100, 32}}, default_font)
 
         // if mouse_pressed(.Right) {
@@ -175,4 +172,98 @@ gui_update :: proc(window: ^Window) {
 
 milliseconds_to_samples :: proc "c" (plugin: ^Plugin, milliseconds: f64) -> int {
     return int(plugin.sample_rate * milliseconds * 0.001)
+}
+
+Parameter_Slider :: struct {
+    id: Id,
+    held: bool,
+    value_when_grabbed: f64,
+    global_mouse_position_when_grabbed: Vector2,
+}
+
+parameter_slider_init :: proc(slider: ^Parameter_Slider) {
+    slider.id = get_id()
+}
+
+parameter_slider_update :: proc(
+    slider: ^Parameter_Slider,
+    plugin: ^Plugin,
+    parameter_id: Parameter_Id,
+    rectangle: Rectangle,
+) {
+    HANDLE_LENGTH :: 16
+
+    if mouse_hit_test(rectangle) {
+        request_mouse_hover(slider.id)
+    }
+
+    reset_grab_info := false
+
+    MOUSE_BUTTON :: Mouse_Button.Left
+    PRECISION_KEY :: Keyboard_Key.Left_Shift
+
+    min_value := parameter_info[parameter_id].min_value
+    max_value := parameter_info[parameter_id].max_value
+
+    if slider.held {
+        if key_pressed(PRECISION_KEY, respect_focus = false) ||
+           key_released(PRECISION_KEY, respect_focus = false) {
+            reset_grab_info = true
+        }
+    }
+
+    if !slider.held && mouse_hover() == slider.id && mouse_pressed(MOUSE_BUTTON) {
+        slider.held = true
+        reset_grab_info = true
+        capture_mouse_hover()
+        begin_parameter_change(plugin, parameter_id)
+    }
+
+    value := sync.atomic_load(&plugin.parameters[parameter_id].value)
+
+    if reset_grab_info {
+        slider.value_when_grabbed = value
+        slider.global_mouse_position_when_grabbed = global_mouse_position()
+    }
+
+    if slider.held {
+        sensitivity: f64 = key_down(PRECISION_KEY, respect_focus = false) ? 0.15 : 1.0
+        global_mouse_position := global_mouse_position()
+        grab_delta := f64(global_mouse_position.x - slider.global_mouse_position_when_grabbed.x)
+        value = slider.value_when_grabbed + sensitivity * grab_delta * (max_value - min_value) / f64(rectangle.size.x - HANDLE_LENGTH)
+
+        if mouse_released(MOUSE_BUTTON) {
+            slider.held = false
+            release_mouse_hover()
+            end_parameter_change(plugin, parameter_id)
+        }
+    }
+
+    value = clamp(value, min_value, max_value)
+
+    set_parameter_value(plugin, parameter_id, value)
+
+    slider_path := temp_path()
+    path_rectangle(&slider_path, rectangle)
+
+    fill_path(slider_path, {0.05, 0.05, 0.05, 1})
+
+    handle_rectangle := Rectangle{
+        rectangle.position + {
+            (rectangle.size.x - HANDLE_LENGTH) * f32(value - min_value) / f32(max_value - min_value),
+            0,
+        }, {
+            HANDLE_LENGTH,
+            rectangle.size.y,
+        },
+    }
+    handle_path := temp_path()
+    path_rectangle(&handle_path, handle_rectangle)
+
+    fill_path(handle_path, {0.4, 0.4, 0.4, 1})
+    if slider.held {
+        fill_path(handle_path, {0, 0, 0, 0.2})
+    } else if mouse_hover() == slider.id {
+        fill_path(handle_path, {1, 1, 1, 0.05})
+    }
 }

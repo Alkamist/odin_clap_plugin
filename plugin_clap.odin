@@ -37,25 +37,101 @@ Clap_Event_Union :: union {
     clap.event_param_value_t,
 }
 
-Plugin_Base :: struct {
-    clap_host: ^clap.host_t,
-    clap_plugin: clap.plugin_t,
-    parameter_values: [Parameter]f64,
-    output_events: [dynamic]Clap_Event_Union,
-    output_event_mutex: sync.Mutex,
+//==========================================================================
+// Parameter
+//==========================================================================
+
+Parameter :: struct {
+    id: Parameter_Id,
+    value: f64,
+    previous_value: f64,
+    is_being_changed_manually: bool,
+    is_interpolating: bool,
+    interpolation_buffer: [dynamic]f64,
 }
+
+clap_param_info :: proc(
+    param: Parameter_Id,
+    name: string,
+    min_value: f64,
+    max_value: f64,
+    default_value: f64,
+    flags: bit_set[clap.param_info_flag; u32],
+) -> (res: clap.param_info_t) {
+    res.id = clap.id(Parameter_Id.Gain)
+    write_string_null_terminated(res.name[:], name)
+    write_string_null_terminated(res.module[:], "")
+    res.min_value = min_value
+    res.max_value = max_value
+    res.default_value = default_value
+    res.flags = flags
+    return
+}
+
+parameter_value :: proc(plugin: ^Plugin, id: Parameter_Id, frame := 0) -> f64 {
+    parameter := &plugin.parameters[id]
+    if sync.atomic_load(&parameter.is_interpolating) {
+        return sync.atomic_load(&parameter.interpolation_buffer[frame])
+    } else {
+        return sync.atomic_load(&parameter.value)
+    }
+}
+
+begin_parameter_change :: proc(plugin: ^Plugin, id: Parameter_Id) {
+    sync.atomic_store(&plugin.parameters[id].is_being_changed_manually, true)
+}
+
+end_parameter_change :: proc(plugin: ^Plugin, id: Parameter_Id) {
+    sync.atomic_store(&plugin.parameters[id].is_being_changed_manually, false)
+}
+
+set_parameter_value :: proc(plugin: ^Plugin, id: Parameter_Id, value: f64) {
+    parameter := &plugin.parameters[id]
+    if value != sync.atomic_load(&parameter.value) {
+        sync.atomic_store(&parameter.value, value)
+        sync.atomic_store(&parameter.is_interpolating, true)
+        sync.lock(&plugin.output_event_mutex)
+        append(&plugin.output_events, clap.event_param_value_t{
+            header = {
+                size = size_of(clap.event_param_value_t),
+                time = 0,
+                space_id = clap.CORE_EVENT_SPACE_ID,
+                type = .PARAM_VALUE,
+                flags = 0,
+            },
+            param_id = u32(id),
+            cookie = nil,
+            note_id = -1,
+            port_index = -1,
+            channel = -1,
+            key = -1,
+            value = value,
+        })
+        sync.unlock(&plugin.output_event_mutex)
+    }
+}
+
+// reset_parameter :: proc "c" (plugin: ^Plugin, id: Parameter_Id) {
+//     set_parameter(plugin, id, parameter_info[id].default_value)
+// }
 
 //==========================================================================
 // Plugin
 //==========================================================================
 
+Plugin_Base :: struct {
+    clap_host: ^clap.host_t,
+    clap_plugin: clap.plugin_t,
+    parameters: [Parameter_Id]Parameter,
+    output_events: [dynamic]Clap_Event_Union,
+    output_event_mutex: sync.Mutex,
+}
+
 clap_plugin_init :: proc "c" (plugin: ^clap.plugin_t) -> bool {
     context = main_context
     plugin := cast(^Plugin)(plugin.plugin_data)
-
     plugin_init(plugin)
     register_timer(plugin, 0, 0)
-
     return true
 }
 
@@ -71,6 +147,9 @@ clap_plugin_destroy :: proc "c" (plugin: ^clap.plugin_t) {
 clap_plugin_activate :: proc "c" (plugin: ^clap.plugin_t, sample_rate: f64, min_frames_count, max_frames_count: u32) -> bool {
     context = main_context
     plugin := cast(^Plugin)(plugin.plugin_data)
+    for id in Parameter_Id {
+        resize(&plugin.parameters[id].interpolation_buffer, int(max_frames_count))
+    }
     plugin_activate(plugin, sample_rate, int(min_frames_count), int(max_frames_count))
     return true
 }
@@ -104,28 +183,47 @@ clap_plugin_process :: proc "c" (plugin: ^clap.plugin_t, process: ^clap.process_
     context = main_context
     plugin := cast(^Plugin)(plugin.plugin_data)
 
-    frame_count := process.frames_count
+    frame_count := int(process.frames_count)
     event_count := process.in_events->size()
 
-    gain: [1024]f64
-    previous_gain_value := parameter(plugin, .Gain)
-    previous_gain_frame := 0
+    for &parameter in plugin.parameters {
+        if sync.atomic_load(&parameter.is_being_changed_manually) && sync.atomic_load(&parameter.is_interpolating) {
+            value := sync.atomic_load(&parameter.value)
+            previous_value := parameter.previous_value
+            increment := (value - previous_value) / f64(frame_count)
+            for frame in 0 ..< frame_count {
+                sync.atomic_store(&parameter.interpolation_buffer[frame], previous_value + increment * f64(frame))
+            }
+            parameter.previous_value = value
+        }
+    }
 
-    for i in 1 ..< event_count {
+    previous_automation_event_frames: [Parameter_Id]int
+    for i in 0 ..< event_count {
         event_header := process.in_events->get(i)
         if event_header.space_id == clap.CORE_EVENT_SPACE_ID {
-            // clap_dispatch_parameter_event(plugin, event_header)
             #partial switch event_header.type {
             case .PARAM_VALUE:
                 clap_event := cast(^clap.event_param_value_t)event_header
-                sync.atomic_store(&plugin.parameter_values[Parameter(clap_event.param_id)], clap_event.value)
-                if Parameter(clap_event.param_id) == .Gain {
-                    increment := (clap_event.value - previous_gain_value) / f64(int(clap_event.header.time) - previous_gain_frame)
-                    for j in previous_gain_frame ..= int(clap_event.header.time) {
-                        gain[j] = previous_gain_value + increment * f64(j - previous_gain_frame)
+                parameter_id := Parameter_Id(clap_event.param_id)
+                parameter := &plugin.parameters[parameter_id]
+                if !sync.atomic_load(&parameter.is_being_changed_manually) {
+                    event_frame := int(clap_event.header.time)
+                    previous_event_frame := previous_automation_event_frames[parameter_id]
+                    previous_value := parameter.value
+                    value := clap_event.value
+
+                    if event_frame > previous_event_frame {
+                        increment := (value - previous_value) / f64(event_frame - previous_event_frame)
+                        for frame in previous_event_frame ..= event_frame {
+                            sync.atomic_store(&parameter.interpolation_buffer[frame], previous_value + increment * f64(frame - previous_event_frame))
+                        }
+                        sync.atomic_store(&parameter.is_interpolating, true)
                     }
-                    previous_gain_value = clap_event.value
-                    previous_gain_frame = int(clap_event.header.time)
+
+                    sync.atomic_store(&parameter.value, value)
+                    parameter.previous_value = previous_value
+                    previous_automation_event_frames[parameter_id] = event_frame
                 }
             }
         }
@@ -135,39 +233,17 @@ clap_plugin_process :: proc "c" (plugin: ^clap.plugin_t, process: ^clap.process_
         in_l := process.audio_inputs[0].data64[0][frame]
         in_r := process.audio_inputs[0].data64[1][frame]
 
-        out_l := in_l * gain[frame]
-        out_r := in_r * gain[frame]
+        gain := parameter_value(plugin, .Gain, frame)
+        out_l := in_l * gain
+        out_r := in_r * gain
 
         process.audio_outputs[0].data64[0][frame] = out_l
         process.audio_outputs[0].data64[1][frame] = out_r
     }
 
-    // for frame in 0 ..< frame_count {
-    //     for event_index < event_count {
-    //         event_header := process.in_events->get(event_index)
-    //         if event_header.time != frame {
-    //             break
-    //         }
-
-    //         if event_header.space_id == clap.CORE_EVENT_SPACE_ID {
-    //             clap_dispatch_parameter_event(plugin, event_header)
-    //         }
-
-    //         event_index += 1
-    //     }
-
-    //     // smoothing := f64(frame) / f64(frame_count)
-    //     // gain := parameter(plugin, .Gain) * smoothing
-
-    //     // in_l := process.audio_inputs[0].data64[0][frame]
-    //     // in_r := process.audio_inputs[0].data64[1][frame]
-
-    //     // out_l := in_l * gain
-    //     // out_r := in_r * gain
-
-    //     // process.audio_outputs[0].data64[0][frame] = out_l
-    //     // process.audio_outputs[0].data64[1][frame] = out_r
-    // }
+    for &parameter in plugin.parameters {
+        sync.atomic_store(&parameter.is_interpolating, false)
+    }
 
     // Sort and send output events, then clear the buffer.
     sync.lock(&plugin.output_event_mutex)
@@ -223,7 +299,9 @@ clap_extension_timer := clap.plugin_timer_support_t{
             }
             plugin_info := cast(^reaper_plugin_info_t)plugin.clap_host->get_extension("cockos.reaper_extension")
             ShowConsoleMsg := cast(proc "c" (msg: cstring))plugin_info.GetFunc("ShowConsoleMsg")
-            ShowConsoleMsg(strings.clone_to_cstring(strings.to_string(_debug_string_builder), context.temp_allocator))
+            str := strings.clone_to_cstring(strings.to_string(_debug_string_builder))
+            defer delete(str)
+            ShowConsoleMsg(str)
             strings.builder_reset(&_debug_string_builder)
             _debug_string_changed = false
         }
@@ -256,25 +334,17 @@ clap_extension_audio_ports := clap.plugin_audio_ports_t{
 }
 
 //==========================================================================
-// Parameter Extension
+// Parameter_Id Extension
 //==========================================================================
-
-clap_dispatch_parameter_event :: proc(plugin: ^Plugin, event_header: ^clap.event_header_t) {
-    #partial switch event_header.type {
-    case .PARAM_VALUE:
-        clap_event := cast(^clap.event_param_value_t)event_header
-        sync.atomic_store(&plugin.parameter_values[Parameter(clap_event.param_id)], clap_event.value)
-    }
-}
 
 clap_extension_parameters := clap.plugin_params_t{
     count = proc "c" (plugin: ^clap.plugin_t) -> u32 {
         plugin := cast(^Plugin)(plugin.plugin_data)
-        return len(Parameter)
+        return len(Parameter_Id)
     },
     get_info = proc "c" (plugin: ^clap.plugin_t, param_index: u32, param_info: ^clap.param_info_t) -> bool {
         plugin := cast(^Plugin)(plugin.plugin_data)
-        if len(Parameter) == 0 {
+        if len(Parameter_Id) == 0 {
             return false
         }
         param_info^ = parameter_info[param_index]
@@ -283,16 +353,16 @@ clap_extension_parameters := clap.plugin_params_t{
     get_value = proc "c" (plugin: ^clap.plugin_t, param_id: clap.id, out_value: ^f64) -> bool {
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
-        if len(Parameter) == 0 {
+        if len(Parameter_Id) == 0 {
             return false
         }
-        out_value^ = parameter(plugin, Parameter(param_id))
+        out_value^ = sync.atomic_load(&plugin.parameters[Parameter_Id(param_id)].value)
         return true
     },
     value_to_text = proc "c" (plugin: ^clap.plugin_t, param_id: clap.id, value: f64, out_buffer: [^]byte, out_buffer_capacity: u32) -> bool {
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
-        if len(Parameter) == 0 {
+        if len(Parameter_Id) == 0 {
             return false
         }
         value_string := fmt.tprintf("%v", value)
@@ -302,7 +372,7 @@ clap_extension_parameters := clap.plugin_params_t{
     text_to_value = proc "c" (plugin: ^clap.plugin_t, param_id: clap.id, param_value_text: cstring, out_value: ^f64) -> bool {
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
-        if len(Parameter) == 0 {
+        if len(Parameter_Id) == 0 {
             return false
         }
         value, ok := strconv.parse_f64(cast(string)param_value_text)
@@ -318,7 +388,12 @@ clap_extension_parameters := clap.plugin_params_t{
         plugin := cast(^Plugin)(plugin.plugin_data)
         event_count := input->size()
         for i in 0 ..< event_count {
-            clap_dispatch_parameter_event(plugin, input->get(i))
+            event_header := input->get(i)
+            #partial switch event_header.type {
+            case .PARAM_VALUE:
+                clap_event := cast(^clap.event_param_value_t)event_header
+                sync.atomic_store(&plugin.parameters[Parameter_Id(clap_event.param_id)].value, clap_event.value)
+            }
         }
     },
 }
@@ -480,49 +555,20 @@ clap_entry := clap.plugin_entry_t{
 // Utility
 //==========================================================================
 
-parameter :: proc(plugin: ^Plugin, id: Parameter) -> f64 {
-    return sync.atomic_load(&plugin.parameter_values[id])
-}
-
-set_parameter :: proc(plugin: ^Plugin, id: Parameter, value: f64) {
-    previous_value := sync.atomic_load(&plugin.parameter_values[id])
-    if value != previous_value {
-        sync.atomic_store(&plugin.parameter_values[id], value)
-        sync.lock(&plugin.output_event_mutex)
-        append(&plugin.output_events, clap.event_param_value_t{
-            header = {
-                size = size_of(clap.event_param_value_t),
-                time = 0,
-                space_id = clap.CORE_EVENT_SPACE_ID,
-                type = .PARAM_VALUE,
-                flags = 0,
-            },
-            param_id = u32(id),
-            cookie = nil,
-            note_id = -1,
-            port_index = -1,
-            channel = -1,
-            key = -1,
-            value = value,
-        })
-        sync.unlock(&plugin.output_event_mutex)
-    }
-}
-
-// reset_parameter :: proc "c" (plugin: ^Plugin, id: Parameter) {
-//     set_parameter(plugin, id, parameter_info[id].default_value)
-// }
-
 println :: proc(args: ..any, sep := " ") {
+    str := fmt.aprintln(..args, sep = sep)
+    defer delete(str)
     sync.lock(&_debug_string_mutex)
-    strings.write_string(&_debug_string_builder, fmt.tprintln(..args, sep = sep))
+    strings.write_string(&_debug_string_builder, str)
     _debug_string_changed = true
     sync.unlock(&_debug_string_mutex)
 }
 
 printfln :: proc(format: string, args: ..any) {
+    str := fmt.aprintfln(format, ..args)
+    defer delete(str)
     sync.lock(&_debug_string_mutex)
-    strings.write_string(&_debug_string_builder, fmt.tprintfln(format, ..args))
+    strings.write_string(&_debug_string_builder, str)
     _debug_string_changed = true
     sync.unlock(&_debug_string_mutex)
 }
@@ -552,22 +598,4 @@ write_string_null_terminated :: proc "c" (buffer: []byte, value: string) {
     n := copy(buffer, value)
     // Make the buffer null terminated
     buffer[min(n, len(buffer) - 1)] = 0
-}
-
-clap_param_info :: proc(
-    param: Parameter,
-    name: string,
-    min_value: f64,
-    max_value: f64,
-    default_value: f64,
-    flags: bit_set[clap.param_info_flag; u32],
-) -> (res: clap.param_info_t) {
-    res.id = clap.id(Parameter.Gain)
-    write_string_null_terminated(res.name[:], name)
-    write_string_null_terminated(res.module[:], "")
-    res.min_value = min_value
-    res.max_value = max_value
-    res.default_value = default_value
-    res.flags = flags
-    return
 }
