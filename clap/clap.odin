@@ -124,6 +124,11 @@ event_param_value_t :: struct {
     value: f64,
 }
 
+event_param_gesture_t :: struct {
+    header: event_header_t,
+    param_id: id,
+}
+
 // event_midi :: struct {
 //     header: event_header,
 //     port_index: u16,

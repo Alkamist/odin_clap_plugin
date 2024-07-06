@@ -9,6 +9,14 @@ import "core:strings"
 import "core:strconv"
 import "clap"
 
+Plugin_Gui_Resize_Hints :: struct{
+    can_resize_horizontally: bool,
+    can_resize_vertically: bool,
+    preserve_aspect_ratio: bool,
+    aspect_ratio_width: int,
+    aspect_ratio_height: int,
+}
+
 CLAP_VERSION :: clap.version_t{1, 2, 1}
 
 clap_plugin_descriptor := clap.plugin_descriptor_t{
@@ -35,6 +43,7 @@ _debug_string_changed: bool
 
 Clap_Event_Union :: union {
     clap.event_param_value_t,
+    clap.event_param_gesture_t,
 }
 
 //==========================================================================
@@ -68,7 +77,7 @@ clap_param_info :: proc(
     return
 }
 
-parameter_value :: proc(plugin: ^Plugin, id: Parameter_Id, frame := 0) -> f64 {
+parameter_value_interpolated :: proc(plugin: ^Plugin, id: Parameter_Id, frame := 0) -> f64 {
     parameter := &plugin.parameters[id]
     if sync.atomic_load(&parameter.is_interpolating) {
         return sync.atomic_load(&parameter.interpolation_buffer[frame])
@@ -77,12 +86,40 @@ parameter_value :: proc(plugin: ^Plugin, id: Parameter_Id, frame := 0) -> f64 {
     }
 }
 
+parameter_value :: proc(plugin: ^Plugin, id: Parameter_Id, frame := 0) -> f64 {
+    return sync.atomic_load(&plugin.parameters[id].value)
+}
+
 begin_parameter_change :: proc(plugin: ^Plugin, id: Parameter_Id) {
     sync.atomic_store(&plugin.parameters[id].is_being_changed_manually, true)
+    sync.lock(&plugin.output_event_mutex)
+    append(&plugin.output_events, clap.event_param_gesture_t{
+        header = {
+            size = size_of(clap.event_param_value_t),
+            time = 0,
+            space_id = clap.CORE_EVENT_SPACE_ID,
+            type = .PARAM_GESTURE_BEGIN,
+            flags = 0,
+        },
+        param_id = u32(id),
+    })
+    sync.unlock(&plugin.output_event_mutex)
 }
 
 end_parameter_change :: proc(plugin: ^Plugin, id: Parameter_Id) {
     sync.atomic_store(&plugin.parameters[id].is_being_changed_manually, false)
+    sync.lock(&plugin.output_event_mutex)
+    append(&plugin.output_events, clap.event_param_gesture_t{
+        header = {
+            size = size_of(clap.event_param_value_t),
+            time = 0,
+            space_id = clap.CORE_EVENT_SPACE_ID,
+            type = .PARAM_GESTURE_BEGIN,
+            flags = 0,
+        },
+        param_id = u32(id),
+    })
+    sync.unlock(&plugin.output_event_mutex)
 }
 
 set_parameter_value :: proc(plugin: ^Plugin, id: Parameter_Id, value: f64) {
@@ -141,6 +178,9 @@ clap_plugin_destroy :: proc "c" (plugin: ^clap.plugin_t) {
     plugin_destroy(plugin)
     unregister_timer(plugin, 0)
     delete(plugin.output_events)
+    for id in Parameter_Id {
+        delete(plugin.parameters[id].interpolation_buffer)
+    }
     free(plugin)
 }
 
@@ -233,7 +273,7 @@ clap_plugin_process :: proc "c" (plugin: ^clap.plugin_t, process: ^clap.process_
         in_l := process.audio_inputs[0].data64[0][frame]
         in_r := process.audio_inputs[0].data64[1][frame]
 
-        gain := parameter_value(plugin, .Gain, frame)
+        gain := parameter_value_interpolated(plugin, .Gain, frame)
         out_l := in_l * gain
         out_r := in_r * gain
 
@@ -287,6 +327,7 @@ clap_extension_timer := clap.plugin_timer_support_t{
     on_timer = proc "c" (plugin: ^clap.plugin_t, timer_id: clap.id) {
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
+        plugin_timer(plugin)
 
         // Flush the debug string to Reaper console.
         sync.lock(&_debug_string_mutex)
@@ -537,10 +578,12 @@ clap_entry := clap.plugin_entry_t{
         main_context = runtime.default_context()
         context = main_context
         _debug_string_builder = strings.builder_make_none()
+        startup()
         return true
     },
     deinit = proc "c" () {
         context = main_context
+        shutdown()
         strings.builder_destroy(&_debug_string_builder)
     },
     get_factory = proc "c" (factory_id: cstring) -> rawptr {

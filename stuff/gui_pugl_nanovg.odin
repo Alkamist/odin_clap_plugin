@@ -7,9 +7,9 @@ import "core:fmt"
 import "core:strings"
 import utf8 "core:unicode/utf8"
 import gl "vendor:OpenGL"
-import nvg "vendor:nanovg"
-import nvg_gl "vendor:nanovg/gl"
-import "pugl"
+// import nvg "vendor:nanovg"
+// import nvg_gl "vendor:nanovg/gl"
+import "../pugl"
 
 @(thread_local) _pugl_odin_context: runtime.Context
 @(thread_local) _open_gl_is_loaded: bool
@@ -46,6 +46,8 @@ Window :: struct {
 }
 
 backend_startup :: proc() {
+    _pugl_odin_context = context
+
     when ODIN_BUILD_MODE == .Dynamic {
         world_type := pugl.WorldType.MODULE
     } else {
@@ -70,7 +72,6 @@ backend_shutdown :: proc() {
 }
 
 backend_poll_window_events :: proc(frame_time: f32) {
-    _pugl_odin_context = context
     if _pugl_world == nil do return
     pugl.Update(_pugl_world, f64(frame_time))
 }
@@ -174,8 +175,8 @@ backend_window_close :: proc(window: ^Window) {
     nvg_gl.Destroy(window.nvg_ctx)
     window.nvg_ctx = nil
 
-    pugl.Unrealize(window.view)
-    pugl.FreeView(window.view)
+    // pugl.Unrealize(window.view)
+    // pugl.FreeView(window.view)
 
     window.view = nil
 }
@@ -453,7 +454,7 @@ _pugl_event_proc :: proc "c" (view: ^pugl.View, event: ^pugl.Event) -> pugl.Stat
         }
 
     case .CLOSE:
-        window.close_requested = true
+        window_close(window)
     }
 
     return .SUCCESS

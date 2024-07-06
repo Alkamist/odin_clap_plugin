@@ -4,10 +4,7 @@ import "core:sync"
 import "core:thread"
 import "core:strings"
 import "clap"
-
-// Send parameter gestures to clap
-// Fix crash when deactivating plugin
-// State saving
+import gl "vendor:OpenGL"
 
 default_font := Font{
     name = "consola_13",
@@ -23,20 +20,15 @@ Plugin_Window :: struct {
 Plugin :: struct {
     using base: Plugin_Base,
 
-    window: Plugin_Window,
     gui_is_running: bool,
     gui_thread: ^thread.Thread,
+    parent_handle: rawptr,
+    window_width: int,
+    window_height: int,
 
     sample_rate: f64,
     min_frames: int,
     max_frames: int,
-
-    gain_slider: Parameter_Slider,
-    test_text: strings.Builder,
-    test_text_line: Editable_Text_Line,
-
-    box: Rectangle,
-    box_velocity: Vector2,
 }
 
 Parameter_Id :: enum {
@@ -47,21 +39,13 @@ parameter_info := [len(Parameter_Id)]clap.param_info_t{
     clap_param_info(.Gain, "Gain", 0, 1, 0.5, {.IS_AUTOMATABLE}),
 }
 
+startup :: proc() {}
+shutdown :: proc() {}
+
 plugin_init :: proc(plugin: ^Plugin) {
-    window_init(&plugin.window, {{0, 0}, {400, 300}})
-    plugin.window.child_kind = .Embedded
-    plugin.window.plugin = plugin
-    plugin.window.background_color = {0.2, 0.2, 0.2, 1}
-
-    parameter_slider_init(&plugin.gain_slider)
-    strings.builder_init(&plugin.test_text)
-    editable_text_line_init(&plugin.test_text_line, &plugin.test_text)
-
-    plugin.box.position.y = 150
-    plugin.box.size = {100, 50}
-    plugin.box_velocity = {1500, 0}
+    plugin.window_width = 400
+    plugin.window_height = 300
 }
-
 plugin_destroy :: proc(plugin: ^Plugin) {}
 plugin_reset :: proc(plugin: ^Plugin) {}
 
@@ -75,48 +59,139 @@ plugin_deactivate :: proc(plugin: ^Plugin) {}
 plugin_start_processing :: proc(plugin: ^Plugin) {}
 plugin_stop_processing :: proc(plugin: ^Plugin) {}
 
-plugin_gui_init :: proc(plugin: ^Plugin) {
-    plugin.gui_is_running = true
-    plugin.gui_thread = thread.create_and_start_with_data(plugin, proc(data: rawptr) {
-        plugin := cast(^Plugin)data
-        gui_startup()
-        defer gui_shutdown()
-        for {
-            if sync.atomic_load(&plugin.gui_is_running) {
-                if !plugin.window.is_open && plugin.window.parent_handle != nil {
-                    window_open(&plugin.window)
-                }
-            } else {
-                window_close(&plugin.window)
-            }
-            gui_update(&plugin.window)
-            poll_window_events(1.0 / 240.0)
-            free_all(context.temp_allocator)
-            if !plugin.gui_is_running && !plugin.window.is_open {
-                break
-            }
-        }
-        plugin.window.parent_handle = nil
-    }, self_cleanup = true)
-}
+plugin_timer :: proc(plugin: ^Plugin) {}
+
+plugin_gui_init :: proc(plugin: ^Plugin) {}
 
 plugin_gui_destroy :: proc(plugin: ^Plugin) {
     sync.atomic_store(&plugin.gui_is_running, false)
+    thread.join(plugin.gui_thread)
+    thread.destroy(plugin.gui_thread)
+    plugin.gui_thread = nil
 }
 
 plugin_gui_set_parent :: proc(plugin: ^Plugin, parent_handle: rawptr) {
-    sync.atomic_store(&plugin.window.parent_handle, parent_handle)
+    sync.atomic_store(&plugin.gui_is_running, true)
+    sync.atomic_store(&plugin.parent_handle, parent_handle)
+    plugin.gui_thread = thread.create_and_start_with_data(plugin, proc(data: rawptr) {
+        plugin := cast(^Plugin)data
+
+        window_width := sync.atomic_load(&plugin.window_width)
+        window_height := sync.atomic_load(&plugin.window_height)
+
+        window: Plugin_Window
+        window_init(&window, {{0, 0}, {f32(window_width), f32(window_height)}})
+        window.open_requested = true
+        window.parent_handle = plugin.parent_handle
+        defer window_destroy(&window)
+
+        gain_slider: Parameter_Slider
+        parameter_slider_init(&gain_slider)
+
+        test_text: strings.Builder
+        strings.builder_init(&test_text)
+        defer strings.builder_destroy(&test_text)
+
+        test_text_line: Editable_Text_Line
+        editable_text_line_init(&test_text_line, &test_text)
+        defer editable_text_line_destroy(&test_text_line)
+
+        box := Rectangle{{0, 0}, {100, 50}}
+        box_velocity := Vector2{1500, 0}
+
+        for sync.atomic_load(&plugin.gui_is_running) {
+            window_width = sync.atomic_load(&plugin.window_width)
+            window_height = sync.atomic_load(&plugin.window_height)
+            window.size = {f32(window_width), f32(window_height)}
+
+            if window_update(&window) {
+                clear_background({0.2, 0.2, 0.2, 1})
+
+                if box.x < 0 {
+                    box_velocity.x = 1500
+                }
+                if box.x + box.size.x > window.size.x {
+                    box_velocity.x = -1500
+                }
+                box.position += box_velocity * delta_time()
+                fill_rounded_rectangle(box, 3, {1, 0, 0, 1})
+
+                parameter_slider_update(&gain_slider, plugin, .Gain, {{10, 10}, {200, 32}})
+                editable_text_line_update(&test_text_line, {{10, 100}, {100, 32}}, default_font)
+
+                if mouse_pressed(.Right) {
+                    set_window_focus(&window)
+                }
+                if mouse_pressed(.Middle) {
+                    set_window_focus_native(window.parent_handle)
+                }
+
+                // if key_pressed(.Left_Shift, respect_focus = false) {
+                //     println("Pressed")
+                // }
+                // if key_released(.Left_Shift, respect_focus = false) {
+                //     println("Released")
+                // }
+
+                // sync.atomic_store(&plugin.window_width, int(window.size.x))
+                // sync.atomic_store(&plugin.window_height, int(window.size.y))
+            }
+
+            poll_window_events()
+            free_all(context.temp_allocator)
+        }
+
+        // println("Done")
+    })
 }
 
+// gui_update :: proc(window: ^Window) {
+//     window := cast(^Plugin_Window)window
+//     plugin := window.plugin
+//     if window_update(window) {
+//         if window.box.x < 0 {
+//             window.box_velocity.x = 1500
+//         }
+//         if window.box.x + window.box.size.x > window.window.size.x {
+//             window.box_velocity.x = -1500
+//         }
+//         window.box.position += window.box_velocity * delta_time()
+//         fill_rounded_rectangle(window.box, 3, {1, 0, 0, 1})
+
+//         parameter_slider_update(&window.gain_slider, plugin, .Gain, {{10, 10}, {200, 32}})
+//         editable_text_line_update(&window.test_text_line, {{10, 100}, {100, 32}}, default_font)
+
+//         // if mouse_pressed(.Right) {
+//         //     window_focus(window)
+//         // }
+//         // if mouse_pressed(.Middle) {
+//         //     window_native_focus(window.parent_handle)
+//         // }
+
+//         // if key_pressed(.A, respect_focus = false, repeat = true) {
+//         //     println("A Pressed")
+//         // }
+//         // if key_released(.A, respect_focus = false) {
+//         //     println("A Released")
+//         // }
+//         // if key_pressed(.B, respect_focus = true, repeat = true) {
+//         //     println("B Pressed")
+//         // }
+//         // if key_released(.B, respect_focus = true) {
+//         //     println("B Released")
+//         // }
+//     }
+// }
+
 plugin_gui_size :: proc(plugin: ^Plugin) -> (width, height: int) {
-    width = int(sync.atomic_load(&plugin.window.size.x))
-    height = int(sync.atomic_load(&plugin.window.size.y))
+    width = sync.atomic_load(&plugin.window_width)
+    height = sync.atomic_load(&plugin.window_height)
     return
 }
 
 plugin_gui_set_size :: proc(plugin: ^Plugin, width, height: int) {
-    sync.atomic_store(&plugin.window.size.x, f32(width))
-    sync.atomic_store(&plugin.window.size.y, f32(height))
+    sync.atomic_store(&plugin.window_width, width)
+    sync.atomic_store(&plugin.window_height, height)
 }
 
 plugin_gui_resize_hints :: proc(plugin: ^Plugin) -> Plugin_Gui_Resize_Hints {
@@ -131,44 +206,6 @@ plugin_gui_resize_hints :: proc(plugin: ^Plugin) -> Plugin_Gui_Resize_Hints {
 
 plugin_gui_show :: proc(plugin: ^Plugin) {}
 plugin_gui_hide :: proc(plugin: ^Plugin) {}
-
-gui_update :: proc(window: ^Window) {
-    window := cast(^Plugin_Window)window
-    plugin := window.plugin
-    if window_update(window) {
-        if plugin.box.x < 0 {
-            plugin.box_velocity.x = 1500
-        }
-        if plugin.box.x + plugin.box.size.x > plugin.window.size.x {
-            plugin.box_velocity.x = -1500
-        }
-        plugin.box.position += plugin.box_velocity * delta_time()
-        fill_rounded_rectangle(plugin.box, 3, {1, 0, 0, 1})
-
-        parameter_slider_update(&plugin.gain_slider, plugin, .Gain, {{10, 10}, {200, 32}})
-        editable_text_line_update(&plugin.test_text_line, {{10, 100}, {100, 32}}, default_font)
-
-        // if mouse_pressed(.Right) {
-        //     window_focus(window)
-        // }
-        // if mouse_pressed(.Middle) {
-        //     window_native_focus(window.parent_handle)
-        // }
-
-        // if key_pressed(.A, respect_focus = false, repeat = true) {
-        //     println("A Pressed")
-        // }
-        // if key_released(.A, respect_focus = false) {
-        //     println("A Released")
-        // }
-        // if key_pressed(.B, respect_focus = true, repeat = true) {
-        //     println("B Pressed")
-        // }
-        // if key_released(.B, respect_focus = true) {
-        //     println("B Released")
-        // }
-    }
-}
 
 milliseconds_to_samples :: proc "c" (plugin: ^Plugin, milliseconds: f64) -> int {
     return int(plugin.sample_rate * milliseconds * 0.001)
@@ -206,8 +243,7 @@ parameter_slider_update :: proc(
     max_value := parameter_info[parameter_id].max_value
 
     if slider.held {
-        if key_pressed(PRECISION_KEY, respect_focus = false) ||
-           key_released(PRECISION_KEY, respect_focus = false) {
+        if key_pressed(PRECISION_KEY) || key_released(PRECISION_KEY) {
             reset_grab_info = true
         }
     }
@@ -219,7 +255,7 @@ parameter_slider_update :: proc(
         begin_parameter_change(plugin, parameter_id)
     }
 
-    value := sync.atomic_load(&plugin.parameters[parameter_id].value)
+    value := parameter_value(plugin, parameter_id)
 
     if reset_grab_info {
         slider.value_when_grabbed = value
@@ -227,7 +263,7 @@ parameter_slider_update :: proc(
     }
 
     if slider.held {
-        sensitivity: f64 = key_down(PRECISION_KEY, respect_focus = false) ? 0.15 : 1.0
+        sensitivity: f64 = key_down(PRECISION_KEY) ? 0.15 : 1.0
         global_mouse_position := global_mouse_position()
         grab_delta := f64(global_mouse_position.x - slider.global_mouse_position_when_grabbed.x)
         value = slider.value_when_grabbed + sensitivity * grab_delta * (max_value - min_value) / f64(rectangle.size.x - HANDLE_LENGTH)
