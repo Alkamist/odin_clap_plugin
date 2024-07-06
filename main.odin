@@ -126,13 +126,6 @@ plugin_gui_set_parent :: proc(plugin: ^Plugin, parent_handle: rawptr) {
                     set_window_focus_native(window.parent_handle)
                 }
 
-                // if key_pressed(.Left_Shift, respect_focus = false) {
-                //     println("Pressed")
-                // }
-                // if key_released(.Left_Shift, respect_focus = false) {
-                //     println("Released")
-                // }
-
                 // sync.atomic_store(&plugin.window_width, int(window.size.x))
                 // sync.atomic_store(&plugin.window_height, int(window.size.y))
             }
@@ -140,48 +133,8 @@ plugin_gui_set_parent :: proc(plugin: ^Plugin, parent_handle: rawptr) {
             poll_window_events()
             free_all(context.temp_allocator)
         }
-
-        // println("Done")
     })
 }
-
-// gui_update :: proc(window: ^Window) {
-//     window := cast(^Plugin_Window)window
-//     plugin := window.plugin
-//     if window_update(window) {
-//         if window.box.x < 0 {
-//             window.box_velocity.x = 1500
-//         }
-//         if window.box.x + window.box.size.x > window.window.size.x {
-//             window.box_velocity.x = -1500
-//         }
-//         window.box.position += window.box_velocity * delta_time()
-//         fill_rounded_rectangle(window.box, 3, {1, 0, 0, 1})
-
-//         parameter_slider_update(&window.gain_slider, plugin, .Gain, {{10, 10}, {200, 32}})
-//         editable_text_line_update(&window.test_text_line, {{10, 100}, {100, 32}}, default_font)
-
-//         // if mouse_pressed(.Right) {
-//         //     window_focus(window)
-//         // }
-//         // if mouse_pressed(.Middle) {
-//         //     window_native_focus(window.parent_handle)
-//         // }
-
-//         // if key_pressed(.A, respect_focus = false, repeat = true) {
-//         //     println("A Pressed")
-//         // }
-//         // if key_released(.A, respect_focus = false) {
-//         //     println("A Released")
-//         // }
-//         // if key_pressed(.B, respect_focus = true, repeat = true) {
-//         //     println("B Pressed")
-//         // }
-//         // if key_released(.B, respect_focus = true) {
-//         //     println("B Released")
-//         // }
-//     }
-// }
 
 plugin_gui_size :: proc(plugin: ^Plugin) -> (width, height: int) {
     width = sync.atomic_load(&plugin.window_width)

@@ -8,17 +8,31 @@ import win32 "core:sys/windows"
 import gl "vendor:OpenGL"
 
 foreign import user32 "system:User32.lib"
-
 @(default_calling_convention="system")
 foreign user32 {
 	GetDesktopWindow :: proc() -> win32.HWND ---
     SetFocus :: proc(hWnd: win32.HWND) -> win32.HWND ---
     GetFocus :: proc() -> win32.HWND ---
+    OpenClipboard :: proc(hWndNewOwner: win32.HWND) -> win32.BOOL ---
+    CloseClipboard :: proc() -> win32.BOOL ---
+    GetClipboardData :: proc(uFormat: win32.UINT) -> win32.HANDLE ---
+    SetClipboardData :: proc(uFormat: win32.UINT, hMem: win32.HANDLE) -> win32.HANDLE ---
+    EmptyClipboard :: proc() -> win32.BOOL ---
+}
+
+foreign import kernel32 "system:Kernel32.lib"
+@(default_calling_convention="system")
+foreign kernel32 {
+    GlobalLock :: proc(hMem: win32.HGLOBAL) -> win32.LPVOID ---
+    GlobalUnlock :: proc(hMem: win32.HGLOBAL) -> win32.BOOL ---
+    GlobalFree :: proc(hMem: win32.HGLOBAL) -> win32.HGLOBAL ---
 }
 
 LOBYTE :: #force_inline proc "contextless" (#any_int w: int) -> win32.BYTE {
     return cast(win32.BYTE)(cast(win32.DWORD_PTR)(w)) & 0xff
 }
+
+CF_UNICODETEXT :: 13
 
 WIN32_WINDOW_CLASS :: "GUI_WINDOW_CLASS"
 
@@ -33,7 +47,9 @@ Window :: struct {
     hglrc: win32.HGLRC,
     high_surrogate: win32.WCHAR,
     odin_context: runtime.Context,
+    _mouse_cursor_style: win32.HCURSOR,
     _is_hovered: bool,
+    // _clipboard_str: string,
 }
 
 poll_events :: proc() {
@@ -48,8 +64,67 @@ poll_key_state :: proc(key: Keyboard_Key) -> bool {
     return win32.GetAsyncKeyState(_keyboard_key_to_win32_vk(key)) != 0
 }
 
-set_mouse_cursor_style :: proc(style: Mouse_Cursor_Style) {
-    win32.SetCursor(win32.LoadCursorA(nil, _mouse_cursor_style_to_win32(style)))
+clipboard :: proc(window: ^Window, allocator := context.allocator) -> string {
+    tries := 0
+    for !OpenClipboard(cast(win32.HWND)window.handle) {
+        win32.Sleep(1)
+        tries += 1
+        if tries == 3 do return ""
+    }
+    defer CloseClipboard()
+
+    object := cast(win32.HGLOBAL)GetClipboardData(CF_UNICODETEXT)
+    if object == nil {
+        return ""
+    }
+
+    buffer := GlobalLock(object)
+    if buffer == nil {
+        return ""
+    }
+    defer GlobalUnlock(object)
+
+    str, err := win32.wstring_to_utf8(cast(win32.wstring)buffer, -1, context.allocator)
+    if err != nil {
+        return ""
+    }
+
+    return str
+}
+
+set_clipboard :: proc(window: ^Window, str: string) {
+    character_count := win32.MultiByteToWideChar(win32.CP_UTF8, 0, raw_data(str), -1, nil, 0)
+    if character_count == 0 {
+        return
+    }
+
+    object := cast(win32.HGLOBAL)win32.GlobalAlloc(win32.GMEM_MOVEABLE, uint(character_count * size_of(win32.WCHAR)))
+    if object == nil {
+        return
+    }
+
+    buffer := GlobalLock(object)
+    if buffer == nil {
+        GlobalFree(object)
+        return
+    }
+
+    win32.MultiByteToWideChar(win32.CP_UTF8, 0, raw_data(str), -1, cast(win32.LPWSTR)buffer, character_count)
+    GlobalUnlock(object)
+
+    tries := 0
+    for !OpenClipboard(cast(win32.HWND)window.handle) {
+        win32.Sleep(1)
+        tries += 1
+        if tries == 3 {
+            GlobalFree(object)
+            return
+        }
+    }
+
+    EmptyClipboard()
+    SetClipboardData(CF_UNICODETEXT, cast(win32.HANDLE)object)
+    CloseClipboard()
 }
 
 swap_buffers :: proc(window: ^Window) {
@@ -65,7 +140,7 @@ open :: proc(window: ^Window, title: string, x, y, width, height: int, parent_ha
         window_class: win32.WNDCLASSW
         window_class.lpfnWndProc = window_proc
         window_class.lpszClassName = intrinsics.constant_utf16_cstring(WIN32_WINDOW_CLASS)
-        window_class.hCursor = win32.LoadCursorA(nil, win32.IDC_ARROW)
+        // window_class.hCursor = win32.LoadCursorA(nil, win32.IDC_ARROW)
         window_class.style = win32.CS_DBLCLKS | win32.CS_OWNDC
         win32.RegisterClassW(&window_class)
     }
@@ -132,6 +207,10 @@ hide :: proc(window: ^Window) {
 
 activate_context :: proc(window: ^Window) {
     win32.wglMakeCurrent(window.hdc, window.hglrc)
+}
+
+set_mouse_cursor_style :: proc(window: ^Window, style: Mouse_Cursor_Style) {
+    window._mouse_cursor_style = win32.LoadCursorA(nil, _mouse_cursor_style_to_win32(style))
 }
 
 mouse_cursor_position :: proc(window: ^Window) -> (x, y: int) {
@@ -212,6 +291,12 @@ window_proc :: proc "system" (hwnd: win32.HWND, msg: win32.UINT, wParam: win32.W
             height = int(win32.HIWORD(cast(win32.DWORD)lParam)),
         })
 
+    case win32.WM_SETCURSOR:
+        win32.SetCursor(window._mouse_cursor_style)
+        // if win32.LOWORD(win32.DWORD(lParam)) == win32.HTCLIENT {
+        //     win32.SetCursor(window._mouse_cursor_style)
+        // }
+
     case win32.WM_MOUSEMOVE:
         if !window._is_hovered {
             tme: win32.TRACKMOUSEEVENT
@@ -269,12 +354,6 @@ window_proc :: proc "system" (hwnd: win32.HWND, msg: win32.UINT, wParam: win32.W
         })
 
     case win32.WM_CHAR, win32.WM_SYSCHAR:
-        // if wParam > 0 && wParam < 0x10000 {
-        //     window.event_proc(window, Event_Input_Rune{
-        //         r = cast(rune)wParam,
-        //     })
-        // }
-
         if wParam >= 0xd800 && wParam <= 0xdbff {
             window.high_surrogate = win32.WCHAR(wParam)
         } else {
@@ -304,55 +383,6 @@ window_proc :: proc "system" (hwnd: win32.HWND, msg: win32.UINT, wParam: win32.W
 
     return win32.DefWindowProcW(hwnd, msg, wParam, lParam)
 }
-
-// create_gl_context :: proc(window: ^Window) {
-//     pfd := win32.PIXELFORMATDESCRIPTOR{
-//         size_of(win32.PIXELFORMATDESCRIPTOR),
-//         1,
-//         win32.PFD_DRAW_TO_WINDOW | win32.PFD_SUPPORT_OPENGL | win32.PFD_DOUBLEBUFFER,
-//         win32.PFD_TYPE_RGBA,
-//         32,
-//         0, 0, 0, 0, 0, 0,
-//         0,
-//         0,
-//         0,
-//         0, 0, 0, 0,
-//         24,
-//         8,
-//         0,
-//         win32.PFD_MAIN_PLANE,
-//         0,
-//         0, 0, 0
-//     }
-
-//     hdc := win32.GetDC(window.handle)
-//     window.hdc = hdc
-//     pfmt := win32.ChoosePixelFormat(window.hdc, &pfd)
-//     win32.SetPixelFormat(window.hdc, pfmt, &pfd)
-//     hglrc := win32.wglCreateContext(window.hdc)
-//     win32.wglMakeCurrent(window.hdc, hglrc)
-
-//     wglCreateContextAttribsARB := cast(type_of(win32.wglCreateContextAttribsARB))win32.wglGetProcAddress("wglChoosePixelFormatARB")
-
-//     if wglCreateContextAttribsARB != nil {
-//         win32.wglDeleteContext(hglrc)
-//         attrib_list := [?]c.int{
-//             win32.WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
-//             win32.WGL_CONTEXT_MINOR_VERSION_ARB, 3,
-//             win32.WGL_CONTEXT_PROFILE_MASK_ARB, win32.WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
-//             0,
-//         }
-//         hglrc = wglCreateContextAttribsARB(window.hdc, nil, &attrib_list[0])
-//         win32.wglMakeCurrent(window.hdc, hglrc)
-//     }
-
-//     if !_open_gl_is_loaded {
-//         gl.load_up_to(3, 3, gl_set_proc_address)
-//         _open_gl_is_loaded = true
-//     }
-
-//     win32.ReleaseDC(window.handle, window.hdc)
-// }
 
 _create_opengl_context :: proc(window: ^Window) {
     pfd := win32.PIXELFORMATDESCRIPTOR{
