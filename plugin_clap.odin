@@ -3,19 +3,12 @@ package main
 import "base:runtime"
 import "core:c"
 import "core:fmt"
+import "core:mem"
 import "core:sync"
 import "core:slice"
 import "core:strings"
 import "core:strconv"
 import "clap"
-
-Plugin_Gui_Resize_Hints :: struct{
-    can_resize_horizontally: bool,
-    can_resize_vertically: bool,
-    preserve_aspect_ratio: bool,
-    aspect_ratio_width: int,
-    aspect_ratio_height: int,
-}
 
 CLAP_VERSION :: clap.version_t{1, 2, 1}
 
@@ -310,7 +303,7 @@ clap_plugin_get_extension :: proc "c" (plugin: ^clap.plugin_t, id: cstring) -> r
     // case clap.EXT_LATENCY: return &clap_extension_latency
     case clap.EXT_PARAMS: return &clap_extension_parameters
     case clap.EXT_TIMER_SUPPORT: return &clap_extension_timer
-    // case clap.EXT_STATE: return &clap_extension_state
+    case clap.EXT_STATE: return &clap_extension_state
     case clap.EXT_GUI: return &clap_extension_gui
     case: return nil
     }
@@ -375,7 +368,7 @@ clap_extension_audio_ports := clap.plugin_audio_ports_t{
 }
 
 //==========================================================================
-// Parameter_Id Extension
+// Parameter Extension
 //==========================================================================
 
 clap_extension_parameters := clap.plugin_params_t{
@@ -388,7 +381,14 @@ clap_extension_parameters := clap.plugin_params_t{
         if len(Parameter_Id) == 0 {
             return false
         }
-        param_info^ = parameter_info[param_index]
+        // param_info^ = parameter_info[param_index]
+        param_info.id = u32(parameter_info[param_index].id)
+        param_info.flags = _parameter_flags_to_clap_flags(parameter_info[param_index].flags)
+        write_string_null_terminated(param_info.name[:], parameter_info[param_index].name)
+        write_string_null_terminated(param_info.module[:], parameter_info[param_index].module)
+        param_info.min_value = parameter_info[param_index].min_value
+        param_info.max_value = parameter_info[param_index].max_value
+        param_info.default_value = parameter_info[param_index].default_value
         return true
     },
     get_value = proc "c" (plugin: ^clap.plugin_t, param_id: clap.id, out_value: ^f64) -> bool {
@@ -436,6 +436,96 @@ clap_extension_parameters := clap.plugin_params_t{
                 sync.atomic_store(&plugin.parameters[Parameter_Id(clap_event.param_id)].value, clap_event.value)
             }
         }
+    },
+}
+
+_parameter_flags_to_clap_flags :: proc "c" (flags: bit_set[Parameter_Flag]) -> (res: bit_set[clap.param_info_flag; u32]) {
+    if .Is_Stepped in flags do res += {.IS_STEPPED}
+    if .Is_Periodic in flags do res += {.IS_PERIODIC}
+    if .Is_Hidden in flags do res += {.IS_HIDDEN}
+    if .Is_Read_Only in flags do res += {.IS_READ_ONLY}
+    if .Is_Bypass in flags do res += {.IS_BYPASS}
+    if .Is_Automatable in flags do res += {.IS_AUTOMATABLE}
+    if .Is_Automatable_Per_Note_Id in flags do res += {.IS_AUTOMATABLE_PER_NOTE_ID}
+    if .Is_Automatable_Per_Key in flags do res += {.IS_AUTOMATABLE_PER_KEY}
+    if .Is_Automatable_Per_Channel in flags do res += {.IS_AUTOMATABLE_PER_CHANNEL}
+    if .Is_Automatable_Per_Port in flags do res += {.IS_AUTOMATABLE_PER_PORT}
+    if .Is_Modulatable in flags do res += {.IS_MODULATABLE}
+    if .Is_Modulatable_Per_Note_Id in flags do res += {.IS_MODULATABLE_PER_NOTE_ID}
+    if .Is_Modulatable_Per_Key in flags do res += {.IS_MODULATABLE_PER_KEY}
+    if .Is_Modulatable_Per_Channel in flags do res += {.IS_MODULATABLE_PER_CHANNEL}
+    if .Is_Modulatable_Per_Port in flags do res += {.IS_MODULATABLE_PER_PORT}
+    if .Requires_Process in flags do res += {.REQUIRES_PROCESS}
+    return
+}
+
+//==========================================================================
+// State Extension
+//==========================================================================
+
+clap_extension_state := clap.plugin_state_t{
+    save = proc "c" (plugin: ^clap.plugin_t, stream: ^clap.ostream_t) -> bool {
+        context = main_context
+        plugin := cast(^Plugin)(plugin.plugin_data)
+
+        builder := strings.builder_make_none()
+        defer strings.builder_destroy(&builder)
+
+        plugin_save_state(plugin, &builder)
+        if len(builder.buf) == 0 do return false
+
+        write_ptr := &builder.buf[0]
+        bytes_to_write := i64(len(builder.buf))
+        for {
+            bytes_written := stream.write(stream, write_ptr, u64(bytes_to_write))
+
+            // Success
+            if bytes_written == bytes_to_write {
+                break
+            }
+
+            // Error
+            if bytes_written <= 0 || bytes_written > bytes_to_write {
+                return false
+            }
+
+            bytes_to_write -= bytes_written
+            write_ptr = mem.ptr_offset(write_ptr, bytes_written)
+        }
+
+        return true
+    },
+    load = proc "c" (plugin: ^clap.plugin_t, stream: ^clap.istream_t) -> bool {
+        context = main_context
+        plugin := cast(^Plugin)(plugin.plugin_data)
+
+        preset_data: [dynamic]byte
+        defer delete(preset_data)
+
+        for {
+            data_byte: byte
+            bytes_read := stream.read(stream, &data_byte, 1)
+
+            // Hit the end of the stream
+            if bytes_read == 0 {
+                break
+            }
+
+            // Possibly more to read so keep going
+            if bytes_read == 1 {
+                append(&preset_data, data_byte)
+                continue
+            }
+
+            // Error
+            if bytes_read < 0 {
+                return false
+            }
+        }
+
+        plugin_load_state(plugin, preset_data[:])
+
+        return true
     },
 }
 

@@ -253,20 +253,20 @@ process_t :: struct {
 //     get: proc "c" (plugin: ^plugin_t, index: u32, is_input: bool, info: ^note_port_info) -> bool,
 // }
 
-// istream :: struct {
-//     ctx: rawptr,
-//     read: proc "c" (stream: ^istream, buffer: rawptr, size: u64) -> i64,
-// }
+istream_t :: struct {
+    ctx: rawptr,
+    read: proc "c" (stream: ^istream_t, buffer: rawptr, size: u64) -> i64,
+}
 
-// ostream :: struct {
-//     ctx: rawptr,
-//     write: proc "c" (stream: ^ostream, buffer: rawptr, size: u64) -> i64,
-// }
+ostream_t :: struct {
+    ctx: rawptr,
+    write: proc "c" (stream: ^ostream_t, buffer: rawptr, size: u64) -> i64,
+}
 
-// Plugin_State :: struct {
-//     save: proc "c" (plugin: ^plugin_t, stream: ^ostream) -> bool,
-//     load: proc "c" (plugin: ^plugin_t, stream: ^istream) -> bool,
-// }
+plugin_state_t :: struct {
+    save: proc "c" (plugin: ^plugin_t, stream: ^ostream_t) -> bool,
+    load: proc "c" (plugin: ^plugin_t, stream: ^istream_t) -> bool,
+}
 
 // Log_Severity :: enum {
 //     Debug,

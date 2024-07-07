@@ -49,7 +49,6 @@ Window :: struct {
     odin_context: runtime.Context,
     _mouse_cursor_style: win32.HCURSOR,
     _is_hovered: bool,
-    // _clipboard_str: string,
 }
 
 poll_events :: proc() {
@@ -292,10 +291,9 @@ window_proc :: proc "system" (hwnd: win32.HWND, msg: win32.UINT, wParam: win32.W
         })
 
     case win32.WM_SETCURSOR:
-        win32.SetCursor(window._mouse_cursor_style)
-        // if win32.LOWORD(win32.DWORD(lParam)) == win32.HTCLIENT {
-        //     win32.SetCursor(window._mouse_cursor_style)
-        // }
+        if win32.LOWORD(win32.DWORD(lParam)) == win32.HTCLIENT {
+            win32.SetCursor(window._mouse_cursor_style)
+        }
 
     case win32.WM_MOUSEMOVE:
         if !window._is_hovered {

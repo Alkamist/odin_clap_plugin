@@ -3,8 +3,10 @@ package main
 import "core:sync"
 import "core:thread"
 import "core:strings"
-import "clap"
 import gl "vendor:OpenGL"
+
+// Standalone window with darkmode
+// Figure out how to deal with DEP violation on windows
 
 default_font := Font{
     name = "consola_13",
@@ -35,8 +37,16 @@ Parameter_Id :: enum {
     Gain,
 }
 
-parameter_info := [len(Parameter_Id)]clap.param_info_t{
-    clap_param_info(.Gain, "Gain", 0, 1, 0.5, {.IS_AUTOMATABLE}),
+parameter_info := [?]Parameter_Info{
+    {.Gain, "Gain", 0, 1, 0.5, {.Is_Automatable}, ""},
+}
+
+Plugin_State :: struct {
+    size: i64le,
+    version: i64le,
+    parameter_offset: i64le,
+    parameter_count: i64le,
+    parameter_values: [Parameter_Id]f64le,
 }
 
 startup :: proc() {}
@@ -46,6 +56,7 @@ plugin_init :: proc(plugin: ^Plugin) {
     plugin.window_width = 400
     plugin.window_height = 300
 }
+
 plugin_destroy :: proc(plugin: ^Plugin) {}
 plugin_reset :: proc(plugin: ^Plugin) {}
 
@@ -60,6 +71,27 @@ plugin_start_processing :: proc(plugin: ^Plugin) {}
 plugin_stop_processing :: proc(plugin: ^Plugin) {}
 
 plugin_timer :: proc(plugin: ^Plugin) {}
+
+plugin_save_state :: proc(plugin: ^Plugin, builder: ^strings.Builder) {
+    state := Plugin_State{
+        size = size_of(Plugin_State),
+        version = 1,
+        parameter_offset = i64le(offset_of(Plugin_State, parameter_values)),
+        parameter_count = len(Parameter_Id),
+    }
+    for id in Parameter_Id {
+        state.parameter_values[id] = f64le(parameter_value(plugin, id))
+    }
+    preset_data := transmute([size_of(state)]byte)state
+    strings.write_bytes(builder, preset_data[:])
+}
+
+plugin_load_state :: proc(plugin: ^Plugin, data: []byte) {
+    state := (cast(^Plugin_State)&data[0])^
+    for id in Parameter_Id {
+        set_parameter_value(plugin, id, f64(state.parameter_values[id]))
+    }
+}
 
 plugin_gui_init :: proc(plugin: ^Plugin) {}
 
