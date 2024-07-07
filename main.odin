@@ -109,6 +109,7 @@ plugin_window_init :: proc(window: ^Plugin_Window, plugin: ^Plugin) {
 
     window_init(window, {{0, 0}, {f32(window_width), f32(window_height)}})
     window.open_requested = true
+    window.child_kind = .Embedded
     window.parent_handle = plugin.parent_handle
 
     parameter_slider_init(&window.gain_slider)
