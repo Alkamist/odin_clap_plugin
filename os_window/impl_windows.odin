@@ -33,6 +33,7 @@ LOBYTE :: #force_inline proc "contextless" (#any_int w: int) -> win32.BYTE {
 }
 
 CF_UNICODETEXT :: 13
+DWMWA_USE_IMMERSIVE_DARK_MODE :: 20
 
 WIN32_WINDOW_CLASS :: "GUI_WINDOW_CLASS"
 
@@ -46,6 +47,7 @@ Window :: struct {
     hdc: win32.HDC,
     hglrc: win32.HGLRC,
     high_surrogate: win32.WCHAR,
+    size_move_timer_id: win32.UINT_PTR,
     odin_context: runtime.Context,
     _mouse_cursor_style: win32.HCURSOR,
     _is_hovered: bool,
@@ -167,6 +169,9 @@ open :: proc(window: ^Window, title: string, x, y, width, height: int, parent_ha
     )
     win32.SetWindowLongPtrW(cast(win32.HWND)window.handle, win32.GWLP_USERDATA, win32.LONG_PTR(cast(uintptr)window))
 
+    use_dark_mode: win32.BOOL = win32.TRUE
+    win32.DwmSetWindowAttribute( cast(win32.HWND)window.handle, DWMWA_USE_IMMERSIVE_DARK_MODE, &use_dark_mode, size_of(use_dark_mode))
+
     _create_opengl_context(window)
 
     sync.atomic_store(&_open_window_count, open_window_count + 1)
@@ -269,6 +274,17 @@ window_proc :: proc "system" (hwnd: win32.HWND, msg: win32.UINT, wParam: win32.W
     context = window.odin_context
 
     switch msg {
+    case win32.WM_ENTERSIZEMOVE:
+        window.size_move_timer_id = win32.SetTimer(cast(win32.HWND)window.handle, 1, win32.USER_TIMER_MINIMUM, nil)
+
+    case win32.WM_EXITSIZEMOVE:
+        win32.KillTimer(cast(win32.HWND)window.handle, window.size_move_timer_id)
+
+    case win32.WM_TIMER:
+        if wParam == window.size_move_timer_id {
+            window.event_proc(window, Event_Loop_Timer{})
+        }
+
     case win32.WM_CLOSE:
         window.event_proc(window, Event_Close{})
 

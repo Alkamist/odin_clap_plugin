@@ -46,6 +46,7 @@ Event :: union {
     Event_Close,
     Event_Gain_Focus,
     Event_Lose_Focus,
+    Event_Loop_Timer,
     Event_Move,
     Event_Resize,
     Event_Mouse_Enter,
@@ -62,6 +63,8 @@ Event :: union {
 Event_Close :: struct {}
 Event_Gain_Focus :: struct {}
 Event_Lose_Focus :: struct {}
+
+Event_Loop_Timer :: struct {}
 
 Event_Move :: struct {
     x, y: int,

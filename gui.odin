@@ -29,6 +29,23 @@ poll_window_events :: osw.poll_events
 set_window_focus :: osw.set_focus
 set_window_focus_native :: osw.set_focus_native
 
+Gui_Event :: osw.Event
+Gui_Event_Close :: osw.Event_Close
+Gui_Event_Gain_Focus :: osw.Event_Gain_Focus
+Gui_Event_Lose_Focus :: osw.Event_Lose_Focus
+Gui_Event_Loop_Timer :: osw.Event_Loop_Timer
+Gui_Event_Move :: osw.Event_Move
+Gui_Event_Resize :: osw.Event_Resize
+Gui_Event_Mouse_Enter :: osw.Event_Mouse_Enter
+Gui_Event_Mouse_Exit :: osw.Event_Mouse_Exit
+Gui_Event_Mouse_Move :: osw.Event_Mouse_Move
+Gui_Event_Mouse_Press :: osw.Event_Mouse_Press
+Gui_Event_Mouse_Release :: osw.Event_Mouse_Release
+Gui_Event_Mouse_Scroll :: osw.Event_Mouse_Scroll
+Gui_Event_Key_Press :: osw.Event_Key_Press
+Gui_Event_Key_Release :: osw.Event_Key_Release
+Gui_Event_Rune_Input :: osw.Event_Rune_Input
+
 //==========================================================================
 // Input
 //==========================================================================
@@ -164,7 +181,7 @@ set_mouse_cursor_style :: proc(style: Mouse_Cursor_Style) {
 _window_event_proc :: proc(window: ^osw.Window, msg: osw.Event) {
     window := cast(^Window)window
 
-    switch msg in msg {
+    #partial switch msg in msg {
     case osw.Event_Close:
         window.close_requested = true
 
@@ -255,6 +272,8 @@ _window_event_proc :: proc(window: ^osw.Window, msg: osw.Event) {
             strings.write_rune(&window.text_input, msg.r)
         }
     }
+
+    gui_event(window, msg)
 }
 
 //==========================================================================

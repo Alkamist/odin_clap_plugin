@@ -3,10 +3,6 @@ package main
 import "core:sync"
 import "core:thread"
 import "core:strings"
-import gl "vendor:OpenGL"
-
-// Standalone window with darkmode
-// Figure out how to deal with DEP violation on windows
 
 default_font := Font{
     name = "consola_13",
@@ -14,10 +10,13 @@ default_font := Font{
     data = #load("consola.ttf"),
 }
 
-Plugin_Window :: struct {
-    using window: Window,
-    plugin: ^Plugin,
+milliseconds_to_samples :: proc "c" (plugin: ^Plugin, milliseconds: f64) -> int {
+    return int(plugin.sample_rate * milliseconds * 0.001)
 }
+
+//==========================================================================
+// Plugin
+//==========================================================================
 
 Plugin :: struct {
     using base: Plugin_Base,
@@ -31,22 +30,6 @@ Plugin :: struct {
     sample_rate: f64,
     min_frames: int,
     max_frames: int,
-}
-
-Parameter_Id :: enum {
-    Gain,
-}
-
-parameter_info := [?]Parameter_Info{
-    {.Gain, "Gain", 0, 1, 0.5, {.Is_Automatable}, ""},
-}
-
-Plugin_State :: struct {
-    size: i64le,
-    version: i64le,
-    parameter_offset: i64le,
-    parameter_count: i64le,
-    parameter_values: [Parameter_Id]f64le,
 }
 
 startup :: proc() {}
@@ -72,6 +55,18 @@ plugin_stop_processing :: proc(plugin: ^Plugin) {}
 
 plugin_timer :: proc(plugin: ^Plugin) {}
 
+//==========================================================================
+// State
+//==========================================================================
+
+Plugin_State :: struct {
+    size: i64le,
+    version: i64le,
+    parameter_offset: i64le,
+    parameter_count: i64le,
+    parameter_values: [Parameter_Id]f64le,
+}
+
 plugin_save_state :: proc(plugin: ^Plugin, builder: ^strings.Builder) {
     state := Plugin_State{
         size = size_of(Plugin_State),
@@ -93,79 +88,94 @@ plugin_load_state :: proc(plugin: ^Plugin, data: []byte) {
     }
 }
 
-plugin_gui_init :: proc(plugin: ^Plugin) {}
+//==========================================================================
+// Gui
+//==========================================================================
+
+gui_event :: proc(window: ^Window, event: Gui_Event) {}
+
+Plugin_Window :: struct {
+    using window: Window,
+    gain_slider: Parameter_Slider,
+    test_text: strings.Builder,
+    test_text_line: Editable_Text_Line,
+    box: Rectangle,
+    box_velocity: Vector2,
+}
+
+plugin_window_init :: proc(window: ^Plugin_Window, plugin: ^Plugin) {
+    window_width := sync.atomic_load(&plugin.window_width)
+    window_height := sync.atomic_load(&plugin.window_height)
+
+    window_init(window, {{0, 0}, {f32(window_width), f32(window_height)}})
+    window.open_requested = true
+    window.parent_handle = plugin.parent_handle
+
+    parameter_slider_init(&window.gain_slider)
+    strings.builder_init(&window.test_text)
+    editable_text_line_init(&window.test_text_line, &window.test_text)
+
+    window.box = {{0, 0}, {100, 50}}
+    window.box_velocity = {1500, 0}
+}
+
+plugin_window_destroy :: proc(window: ^Plugin_Window) {
+    editable_text_line_destroy(&window.test_text_line)
+    strings.builder_destroy(&window.test_text)
+    window_destroy(window)
+}
+
+plugin_window_update :: proc(window: ^Plugin_Window, plugin: ^Plugin) {
+    window_width := sync.atomic_load(&plugin.window_width)
+    window_height := sync.atomic_load(&plugin.window_height)
+    window.size = {f32(window_width), f32(window_height)}
+
+    if window_update(window) {
+        clear_background({0.2, 0.2, 0.2, 1})
+
+        if window.box.x < 0 {
+            window.box_velocity.x = 1500
+        }
+        if window.box.x + window.box.size.x > window.size.x {
+            window.box_velocity.x = -1500
+        }
+        window.box.position += window.box_velocity * delta_time()
+        fill_rounded_rectangle(window.box, 3, {1, 0, 0, 1})
+
+        parameter_slider_update(&window.gain_slider, plugin, .Gain, {{10, 10}, {200, 32}})
+        editable_text_line_update(&window.test_text_line, {{10, 100}, {100, 32}}, default_font)
+
+        if mouse_pressed(.Right) {
+            set_window_focus(window)
+        }
+        if mouse_pressed(.Middle) {
+            set_window_focus_native(window.parent_handle)
+        }
+    }
+
+    free_all(context.temp_allocator)
+}
+
+plugin_gui_init :: proc(plugin: ^Plugin, parent_handle: rawptr) {
+    sync.atomic_store(&plugin.gui_is_running, true)
+    sync.atomic_store(&plugin.parent_handle, parent_handle)
+    plugin.gui_thread = thread.create_and_start_with_data(plugin, proc(data: rawptr) {
+        plugin := cast(^Plugin)data
+        window: Plugin_Window
+        plugin_window_init(&window, plugin)
+        defer plugin_window_destroy(&window)
+        for sync.atomic_load(&plugin.gui_is_running) {
+            poll_window_events()
+            plugin_window_update(&window, plugin)
+        }
+    })
+}
 
 plugin_gui_destroy :: proc(plugin: ^Plugin) {
     sync.atomic_store(&plugin.gui_is_running, false)
     thread.join(plugin.gui_thread)
     thread.destroy(plugin.gui_thread)
     plugin.gui_thread = nil
-}
-
-plugin_gui_set_parent :: proc(plugin: ^Plugin, parent_handle: rawptr) {
-    sync.atomic_store(&plugin.gui_is_running, true)
-    sync.atomic_store(&plugin.parent_handle, parent_handle)
-    plugin.gui_thread = thread.create_and_start_with_data(plugin, proc(data: rawptr) {
-        plugin := cast(^Plugin)data
-
-        window_width := sync.atomic_load(&plugin.window_width)
-        window_height := sync.atomic_load(&plugin.window_height)
-
-        window: Plugin_Window
-        window_init(&window, {{0, 0}, {f32(window_width), f32(window_height)}})
-        window.open_requested = true
-        window.parent_handle = plugin.parent_handle
-        defer window_destroy(&window)
-
-        gain_slider: Parameter_Slider
-        parameter_slider_init(&gain_slider)
-
-        test_text: strings.Builder
-        strings.builder_init(&test_text)
-        defer strings.builder_destroy(&test_text)
-
-        test_text_line: Editable_Text_Line
-        editable_text_line_init(&test_text_line, &test_text)
-        defer editable_text_line_destroy(&test_text_line)
-
-        box := Rectangle{{0, 0}, {100, 50}}
-        box_velocity := Vector2{1500, 0}
-
-        for sync.atomic_load(&plugin.gui_is_running) {
-            window_width = sync.atomic_load(&plugin.window_width)
-            window_height = sync.atomic_load(&plugin.window_height)
-            window.size = {f32(window_width), f32(window_height)}
-
-            if window_update(&window) {
-                clear_background({0.2, 0.2, 0.2, 1})
-
-                if box.x < 0 {
-                    box_velocity.x = 1500
-                }
-                if box.x + box.size.x > window.size.x {
-                    box_velocity.x = -1500
-                }
-                box.position += box_velocity * delta_time()
-                fill_rounded_rectangle(box, 3, {1, 0, 0, 1})
-
-                parameter_slider_update(&gain_slider, plugin, .Gain, {{10, 10}, {200, 32}})
-                editable_text_line_update(&test_text_line, {{10, 100}, {100, 32}}, default_font)
-
-                if mouse_pressed(.Right) {
-                    set_window_focus(&window)
-                }
-                if mouse_pressed(.Middle) {
-                    set_window_focus_native(window.parent_handle)
-                }
-
-                // sync.atomic_store(&plugin.window_width, int(window.size.x))
-                // sync.atomic_store(&plugin.window_height, int(window.size.y))
-            }
-
-            poll_window_events()
-            free_all(context.temp_allocator)
-        }
-    })
 }
 
 plugin_gui_size :: proc(plugin: ^Plugin) -> (width, height: int) {
@@ -192,8 +202,16 @@ plugin_gui_resize_hints :: proc(plugin: ^Plugin) -> Plugin_Gui_Resize_Hints {
 plugin_gui_show :: proc(plugin: ^Plugin) {}
 plugin_gui_hide :: proc(plugin: ^Plugin) {}
 
-milliseconds_to_samples :: proc "c" (plugin: ^Plugin, milliseconds: f64) -> int {
-    return int(plugin.sample_rate * milliseconds * 0.001)
+//==========================================================================
+// Parameters
+//==========================================================================
+
+Parameter_Id :: enum {
+    Gain,
+}
+
+parameter_info := [?]Parameter_Info{
+    {.Gain, "Gain", 0, 1, 0.5, {.Is_Automatable}, ""},
 }
 
 Parameter_Slider :: struct {
