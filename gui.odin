@@ -318,6 +318,7 @@ Window :: struct {
 
     is_open: bool,
     opened: bool,
+    closed: bool,
     is_visible: bool,
     open_requested: bool,
     close_requested: bool,
@@ -432,6 +433,7 @@ window_end :: proc() {
 
     window.is_first_frame_ever = false
     window.opened = false
+    window.closed = false
 
     for key in Keyboard_Key {
         window.previous_key_down[key] = window.key_down[key]
@@ -503,6 +505,7 @@ _window_do_close :: proc(window: ^Window) {
     osw.close(window)
     clear(&window.loaded_fonts)
     window.is_open = false
+    window.closed = true
     window.close_requested = false
 }
 

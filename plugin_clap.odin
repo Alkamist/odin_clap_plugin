@@ -30,9 +30,9 @@ clap_plugin_descriptor := clap.plugin_descriptor_t{
 
 main_context: runtime.Context
 
-// _debug_string_mutex: sync.Mutex
-// _debug_string_builder: strings.Builder
-// _debug_string_changed: bool
+_debug_string_mutex: sync.Mutex
+_debug_string_builder: strings.Builder
+_debug_string_changed: bool
 
 Clap_Event_Union :: union {
     clap.event_param_value_t,
@@ -322,24 +322,24 @@ clap_extension_timer := clap.plugin_timer_support_t{
         plugin := cast(^Plugin)(plugin.plugin_data)
         plugin_timer(plugin)
 
-        // // Flush the debug string to Reaper console.
-        // sync.lock(&_debug_string_mutex)
-        // if _debug_string_changed {
-        //     reaper_plugin_info_t :: struct {
-        //         caller_version: c.int,
-        //         hwnd_main: rawptr,
-        //         Register: proc "c" (name: cstring, infostruct: rawptr) -> c.int,
-        //         GetFunc: proc "c" (name: cstring) -> rawptr,
-        //     }
-        //     plugin_info := cast(^reaper_plugin_info_t)plugin.clap_host->get_extension("cockos.reaper_extension")
-        //     ShowConsoleMsg := cast(proc "c" (msg: cstring))plugin_info.GetFunc("ShowConsoleMsg")
-        //     str := strings.clone_to_cstring(strings.to_string(_debug_string_builder))
-        //     defer delete(str)
-        //     ShowConsoleMsg(str)
-        //     strings.builder_reset(&_debug_string_builder)
-        //     _debug_string_changed = false
-        // }
-        // sync.unlock(&_debug_string_mutex)
+        // Flush the debug string to Reaper console.
+        sync.lock(&_debug_string_mutex)
+        if _debug_string_changed {
+            reaper_plugin_info_t :: struct {
+                caller_version: c.int,
+                hwnd_main: rawptr,
+                Register: proc "c" (name: cstring, infostruct: rawptr) -> c.int,
+                GetFunc: proc "c" (name: cstring) -> rawptr,
+            }
+            plugin_info := cast(^reaper_plugin_info_t)plugin.clap_host->get_extension("cockos.reaper_extension")
+            ShowConsoleMsg := cast(proc "c" (msg: cstring))plugin_info.GetFunc("ShowConsoleMsg")
+            str := strings.clone_to_cstring(strings.to_string(_debug_string_builder))
+            defer delete(str)
+            ShowConsoleMsg(str)
+            strings.builder_reset(&_debug_string_builder)
+            _debug_string_changed = false
+        }
+        sync.unlock(&_debug_string_mutex)
 
         free_all(context.temp_allocator)
     },
@@ -664,14 +664,14 @@ clap_entry := clap.plugin_entry_t{
     init = proc "c" (plugin_path: cstring) -> bool {
         main_context = runtime.default_context()
         context = main_context
-        // _debug_string_builder = strings.builder_make_none()
-        // startup()
+        _debug_string_builder = strings.builder_make_none()
+        startup()
         return true
     },
     deinit = proc "c" () {
-        // context = main_context
-        // shutdown()
-        // strings.builder_destroy(&_debug_string_builder)
+        context = main_context
+        shutdown()
+        strings.builder_destroy(&_debug_string_builder)
     },
     get_factory = proc "c" (factory_id: cstring) -> rawptr {
         if factory_id == clap.PLUGIN_FACTORY_ID {
@@ -685,23 +685,23 @@ clap_entry := clap.plugin_entry_t{
 // Utility
 //==========================================================================
 
-// println :: proc(args: ..any, sep := " ") {
-//     str := fmt.aprintln(..args, sep = sep)
-//     defer delete(str)
-//     sync.lock(&_debug_string_mutex)
-//     strings.write_string(&_debug_string_builder, str)
-//     _debug_string_changed = true
-//     sync.unlock(&_debug_string_mutex)
-// }
+println :: proc(args: ..any, sep := " ") {
+    str := fmt.aprintln(..args, sep = sep)
+    defer delete(str)
+    sync.lock(&_debug_string_mutex)
+    strings.write_string(&_debug_string_builder, str)
+    _debug_string_changed = true
+    sync.unlock(&_debug_string_mutex)
+}
 
-// printfln :: proc(format: string, args: ..any) {
-//     str := fmt.aprintfln(format, ..args)
-//     defer delete(str)
-//     sync.lock(&_debug_string_mutex)
-//     strings.write_string(&_debug_string_builder, str)
-//     _debug_string_changed = true
-//     sync.unlock(&_debug_string_mutex)
-// }
+printfln :: proc(format: string, args: ..any) {
+    str := fmt.aprintfln(format, ..args)
+    defer delete(str)
+    sync.lock(&_debug_string_mutex)
+    strings.write_string(&_debug_string_builder, str)
+    _debug_string_changed = true
+    sync.unlock(&_debug_string_mutex)
+}
 
 register_timer :: proc(plugin: ^Plugin, id: clap.id, period_ms: int) {
     if plugin.clap_host == nil do return

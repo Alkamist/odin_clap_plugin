@@ -174,7 +174,6 @@ plugin_gui_init :: proc(plugin: ^Plugin, parent_handle: rawptr) {
 
 plugin_gui_destroy :: proc(plugin: ^Plugin) {
     sync.atomic_store(&plugin.gui_is_running, false)
-    thread.join(plugin.gui_thread)
     thread.destroy(plugin.gui_thread)
     plugin.gui_thread = nil
 }
@@ -195,8 +194,8 @@ plugin_gui_resize_hints :: proc(plugin: ^Plugin) -> Plugin_Gui_Resize_Hints {
         can_resize_horizontally = true,
         can_resize_vertically = true,
         preserve_aspect_ratio = false,
-        aspect_ratio_width = 0,
-        aspect_ratio_height = 0,
+        aspect_ratio_width = 1,
+        aspect_ratio_height = 1,
     }
 }
 
