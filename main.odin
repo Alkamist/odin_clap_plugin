@@ -21,11 +21,11 @@ milliseconds_to_samples :: proc "c" (plugin: ^Plugin, milliseconds: f64) -> int 
 Plugin :: struct {
     using base: Plugin_Base,
 
-    gui_is_running: bool,
     gui_thread: ^thread.Thread,
-    parent_handle: rawptr,
+    gui_is_open: bool,
     window_width: int,
     window_height: int,
+    parent_handle: rawptr,
 
     sample_rate: f64,
     min_frames: int,
@@ -35,11 +35,7 @@ Plugin :: struct {
 startup :: proc() {}
 shutdown :: proc() {}
 
-plugin_init :: proc(plugin: ^Plugin) {
-    plugin.window_width = 400
-    plugin.window_height = 300
-}
-
+plugin_init :: proc(plugin: ^Plugin) {}
 plugin_destroy :: proc(plugin: ^Plugin) {}
 plugin_reset :: proc(plugin: ^Plugin) {}
 
@@ -52,7 +48,6 @@ plugin_activate :: proc(plugin: ^Plugin, sample_rate: f64, min_frames, max_frame
 plugin_deactivate :: proc(plugin: ^Plugin) {}
 plugin_start_processing :: proc(plugin: ^Plugin) {}
 plugin_stop_processing :: proc(plugin: ^Plugin) {}
-
 plugin_timer :: proc(plugin: ^Plugin) {}
 
 //==========================================================================
@@ -96,6 +91,7 @@ gui_event :: proc(window: ^Window, event: Gui_Event) {}
 
 Plugin_Window :: struct {
     using window: Window,
+    plugin: ^Plugin,
     gain_slider: Parameter_Slider,
     test_text: strings.Builder,
     test_text_line: Editable_Text_Line,
@@ -103,14 +99,16 @@ Plugin_Window :: struct {
     box_velocity: Vector2,
 }
 
-plugin_window_init :: proc(window: ^Plugin_Window, plugin: ^Plugin) {
-    window_width := sync.atomic_load(&plugin.window_width)
-    window_height := sync.atomic_load(&plugin.window_height)
+plugin_window_init :: proc(window: ^Plugin_Window) {
+    plugin := window.plugin
 
-    window_init(window, {{0, 0}, {f32(window_width), f32(window_height)}})
-    window.open_requested = true
+    window_init(window, {{0, 0}, {
+        f32(sync.atomic_load(&plugin.window_width)),
+        f32(sync.atomic_load(&plugin.window_height)),
+    }})
+    window.should_open = true
+    window.parent_handle = window.plugin.parent_handle
     window.child_kind = .Embedded
-    window.parent_handle = plugin.parent_handle
 
     parameter_slider_init(&window.gain_slider)
     strings.builder_init(&window.test_text)
@@ -126,10 +124,13 @@ plugin_window_destroy :: proc(window: ^Plugin_Window) {
     window_destroy(window)
 }
 
-plugin_window_update :: proc(window: ^Plugin_Window, plugin: ^Plugin) {
-    window_width := sync.atomic_load(&plugin.window_width)
-    window_height := sync.atomic_load(&plugin.window_height)
-    window.size = {f32(window_width), f32(window_height)}
+plugin_window_update :: proc(window: ^Plugin_Window) {
+    plugin := window.plugin
+
+    window.size = {
+        f32(sync.atomic_load(&plugin.window_width)),
+        f32(sync.atomic_load(&plugin.window_height)),
+    }
 
     if window_update(window) {
         clear_background({0.2, 0.2, 0.2, 1})
@@ -153,34 +154,44 @@ plugin_window_update :: proc(window: ^Plugin_Window, plugin: ^Plugin) {
             set_window_focus_native(window.parent_handle)
         }
     }
-
-    free_all(context.temp_allocator)
 }
 
-plugin_gui_init :: proc(plugin: ^Plugin, parent_handle: rawptr) {
-    sync.atomic_store(&plugin.gui_is_running, true)
+plugin_gui_init :: proc(plugin: ^Plugin, width, height: int, parent_handle: rawptr) {
+    sync.atomic_store(&plugin.window_width, width)
+    sync.atomic_store(&plugin.window_height, height)
     sync.atomic_store(&plugin.parent_handle, parent_handle)
+    sync.atomic_store(&plugin.gui_is_open, true)
+
     plugin.gui_thread = thread.create_and_start_with_data(plugin, proc(data: rawptr) {
         plugin := cast(^Plugin)data
+
         window: Plugin_Window
-        plugin_window_init(&window, plugin)
+        window.plugin = plugin
+        plugin_window_init(&window)
         defer plugin_window_destroy(&window)
-        for sync.atomic_load(&plugin.gui_is_running) {
+
+        for sync.atomic_load(&plugin.gui_is_open) {
             poll_window_events()
-            plugin_window_update(&window, plugin)
+            plugin_window_update(&window)
+            free_all(context.temp_allocator)
         }
     })
 }
 
 plugin_gui_destroy :: proc(plugin: ^Plugin) {
-    sync.atomic_store(&plugin.gui_is_running, false)
+    sync.atomic_store(&plugin.gui_is_open, false)
     thread.destroy(plugin.gui_thread)
     plugin.gui_thread = nil
 }
 
 plugin_gui_size :: proc(plugin: ^Plugin) -> (width, height: int) {
-    width = sync.atomic_load(&plugin.window_width)
-    height = sync.atomic_load(&plugin.window_height)
+    if sync.atomic_load(&plugin.gui_is_open) {
+        width = sync.atomic_load(&plugin.window_width)
+        height = sync.atomic_load(&plugin.window_height)
+    } else {
+        width = 400
+        height = 300
+    }
     return
 }
 

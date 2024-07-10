@@ -155,6 +155,8 @@ Plugin_Base :: struct {
     parameters: [Parameter_Id]Parameter,
     output_events: [dynamic]Clap_Event_Union,
     output_event_mutex: sync.Mutex,
+    gui_width: int,
+    gui_height: int,
 }
 
 clap_plugin_init :: proc "c" (plugin: ^clap.plugin_t) -> bool {
@@ -319,6 +321,7 @@ clap_plugin_on_main_thread :: proc "c" (plugin: ^clap.plugin_t) {
 clap_extension_timer := clap.plugin_timer_support_t{
     on_timer = proc "c" (plugin: ^clap.plugin_t, timer_id: clap.id) {
         context = main_context
+
         plugin := cast(^Plugin)(plugin.plugin_data)
         plugin_timer(plugin)
 
@@ -381,7 +384,6 @@ clap_extension_parameters := clap.plugin_params_t{
         if len(Parameter_Id) == 0 {
             return false
         }
-        // param_info^ = parameter_info[param_index]
         param_info.id = u32(parameter_info[param_index].id)
         param_info.flags = _parameter_flags_to_clap_flags(parameter_info[param_index].flags)
         write_string_null_terminated(param_info.name[:], parameter_info[param_index].name)
@@ -587,13 +589,15 @@ clap_extension_gui := clap.plugin_gui_t{
     set_size = proc "c" (plugin: ^clap.plugin_t, width, height: u32) -> bool {
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
+        plugin.gui_width = int(width)
+        plugin.gui_height = int(height)
         plugin_gui_set_size(plugin, int(width), int(height))
         return true
     },
     set_parent = proc "c" (plugin: ^clap.plugin_t, window: ^clap.window_t) -> bool {
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
-        plugin_gui_init(plugin, window.handle)
+        plugin_gui_init(plugin, plugin.gui_width, plugin.gui_height, window.handle)
         return true
     },
     set_transient = proc "c" (plugin: ^clap.plugin_t, window: ^clap.window_t) -> bool {
