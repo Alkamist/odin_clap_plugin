@@ -183,7 +183,7 @@ open :: proc(window: ^Window, title: string, x, y, width, height: int, parent_ha
     set_size(window, width, height)
 
     use_dark_mode: win32.BOOL = win32.TRUE
-    win32.DwmSetWindowAttribute( cast(win32.HWND)window.handle, DWMWA_USE_IMMERSIVE_DARK_MODE, &use_dark_mode, size_of(use_dark_mode))
+    win32.DwmSetWindowAttribute(cast(win32.HWND)window.handle, DWMWA_USE_IMMERSIVE_DARK_MODE, &use_dark_mode, size_of(use_dark_mode))
 
     _create_opengl_context(window)
 

@@ -141,10 +141,6 @@ set_parameter_value :: proc(plugin: ^Plugin, id: Parameter_Id, value: f64) {
     }
 }
 
-// reset_parameter :: proc "c" (plugin: ^Plugin, id: Parameter_Id) {
-//     set_parameter(plugin, id, parameter_info[id].default_value)
-// }
-
 //==========================================================================
 // Plugin
 //==========================================================================
@@ -222,6 +218,7 @@ clap_plugin_process :: proc "c" (plugin: ^clap.plugin_t, process: ^clap.process_
     frame_count := int(process.frames_count)
     event_count := process.in_events->size()
 
+    // Changing a parameter's value manually takes priority over automation.
     for &parameter in plugin._parameters {
         if sync.atomic_load(&parameter.is_being_changed_manually) && sync.atomic_load(&parameter.is_interpolating) {
             value := sync.atomic_load(&parameter.value)
@@ -234,6 +231,7 @@ clap_plugin_process :: proc "c" (plugin: ^clap.plugin_t, process: ^clap.process_
         }
     }
 
+    // Go through all the automation events and fill the interpolation buffers.
     previous_automation_event_frames: [Parameter_Id]int
     for i in 0 ..< event_count {
         event_header := process.in_events->get(i)
@@ -277,11 +275,13 @@ clap_plugin_process :: proc "c" (plugin: ^clap.plugin_t, process: ^clap.process_
         process.audio_outputs[0].data64[1][frame] = out_r
     }
 
+    // Parameter interpolation only lasts for a single block.
     for &parameter in plugin._parameters {
         sync.atomic_store(&parameter.is_interpolating, false)
     }
 
     // Sort and send output events, then clear the buffer.
+    // I'm not sure how to avoid using a mutex here.
     sync.lock(&plugin._output_event_mutex)
     slice.sort_by(plugin._output_events[:], proc(i, j: Clap_Event_Union) -> bool {
         i := i
@@ -482,12 +482,12 @@ clap_extension_state := clap.plugin_state_t{
         for {
             bytes_written := stream.write(stream, write_ptr, u64(bytes_to_write))
 
-            // Success
+            // Success.
             if bytes_written == bytes_to_write {
                 break
             }
 
-            // Error
+            // Error.
             if bytes_written <= 0 || bytes_written > bytes_to_write {
                 return false
             }
@@ -509,18 +509,18 @@ clap_extension_state := clap.plugin_state_t{
             data_byte: byte
             bytes_read := stream.read(stream, &data_byte, 1)
 
-            // Hit the end of the stream
+            // Hit the end of the stream.
             if bytes_read == 0 {
                 break
             }
 
-            // Possibly more to read so keep going
+            // Possibly more to read so keep going.
             if bytes_read == 1 {
                 append(&preset_data, data_byte)
                 continue
             }
 
-            // Error
+            // Error.
             if bytes_read < 0 {
                 return false
             }
