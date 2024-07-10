@@ -71,7 +71,7 @@ clap_param_info :: proc(
 }
 
 parameter_value_interpolated :: proc(plugin: ^Plugin, id: Parameter_Id, frame := 0) -> f64 {
-    parameter := &plugin.parameters[id]
+    parameter := &plugin._parameters[id]
     if sync.atomic_load(&parameter.is_interpolating) {
         return sync.atomic_load(&parameter.interpolation_buffer[frame])
     } else {
@@ -80,13 +80,13 @@ parameter_value_interpolated :: proc(plugin: ^Plugin, id: Parameter_Id, frame :=
 }
 
 parameter_value :: proc(plugin: ^Plugin, id: Parameter_Id, frame := 0) -> f64 {
-    return sync.atomic_load(&plugin.parameters[id].value)
+    return sync.atomic_load(&plugin._parameters[id].value)
 }
 
 begin_parameter_change :: proc(plugin: ^Plugin, id: Parameter_Id) {
-    sync.atomic_store(&plugin.parameters[id].is_being_changed_manually, true)
-    sync.lock(&plugin.output_event_mutex)
-    append(&plugin.output_events, clap.event_param_gesture_t{
+    sync.atomic_store(&plugin._parameters[id].is_being_changed_manually, true)
+    sync.lock(&plugin._output_event_mutex)
+    append(&plugin._output_events, clap.event_param_gesture_t{
         header = {
             size = size_of(clap.event_param_value_t),
             time = 0,
@@ -96,13 +96,13 @@ begin_parameter_change :: proc(plugin: ^Plugin, id: Parameter_Id) {
         },
         param_id = u32(id),
     })
-    sync.unlock(&plugin.output_event_mutex)
+    sync.unlock(&plugin._output_event_mutex)
 }
 
 end_parameter_change :: proc(plugin: ^Plugin, id: Parameter_Id) {
-    sync.atomic_store(&plugin.parameters[id].is_being_changed_manually, false)
-    sync.lock(&plugin.output_event_mutex)
-    append(&plugin.output_events, clap.event_param_gesture_t{
+    sync.atomic_store(&plugin._parameters[id].is_being_changed_manually, false)
+    sync.lock(&plugin._output_event_mutex)
+    append(&plugin._output_events, clap.event_param_gesture_t{
         header = {
             size = size_of(clap.event_param_value_t),
             time = 0,
@@ -112,16 +112,16 @@ end_parameter_change :: proc(plugin: ^Plugin, id: Parameter_Id) {
         },
         param_id = u32(id),
     })
-    sync.unlock(&plugin.output_event_mutex)
+    sync.unlock(&plugin._output_event_mutex)
 }
 
 set_parameter_value :: proc(plugin: ^Plugin, id: Parameter_Id, value: f64) {
-    parameter := &plugin.parameters[id]
+    parameter := &plugin._parameters[id]
     if value != sync.atomic_load(&parameter.value) {
         sync.atomic_store(&parameter.value, value)
         sync.atomic_store(&parameter.is_interpolating, true)
-        sync.lock(&plugin.output_event_mutex)
-        append(&plugin.output_events, clap.event_param_value_t{
+        sync.lock(&plugin._output_event_mutex)
+        append(&plugin._output_events, clap.event_param_value_t{
             header = {
                 size = size_of(clap.event_param_value_t),
                 time = 0,
@@ -137,7 +137,7 @@ set_parameter_value :: proc(plugin: ^Plugin, id: Parameter_Id, value: f64) {
             key = -1,
             value = value,
         })
-        sync.unlock(&plugin.output_event_mutex)
+        sync.unlock(&plugin._output_event_mutex)
     }
 }
 
@@ -152,11 +152,12 @@ set_parameter_value :: proc(plugin: ^Plugin, id: Parameter_Id, value: f64) {
 Plugin_Base :: struct {
     clap_host: ^clap.host_t,
     clap_plugin: clap.plugin_t,
-    parameters: [Parameter_Id]Parameter,
-    output_events: [dynamic]Clap_Event_Union,
-    output_event_mutex: sync.Mutex,
-    gui_width: int,
-    gui_height: int,
+
+    _parameters: [Parameter_Id]Parameter,
+    _output_events: [dynamic]Clap_Event_Union,
+    _output_event_mutex: sync.Mutex,
+    _gui_width: int,
+    _gui_height: int,
 }
 
 clap_plugin_init :: proc "c" (plugin: ^clap.plugin_t) -> bool {
@@ -172,9 +173,9 @@ clap_plugin_destroy :: proc "c" (plugin: ^clap.plugin_t) {
     plugin := cast(^Plugin)(plugin.plugin_data)
     plugin_destroy(plugin)
     unregister_timer(plugin, 0)
-    delete(plugin.output_events)
+    delete(plugin._output_events)
     for id in Parameter_Id {
-        delete(plugin.parameters[id].interpolation_buffer)
+        delete(plugin._parameters[id].interpolation_buffer)
     }
     free(plugin)
 }
@@ -183,7 +184,7 @@ clap_plugin_activate :: proc "c" (plugin: ^clap.plugin_t, sample_rate: f64, min_
     context = main_context
     plugin := cast(^Plugin)(plugin.plugin_data)
     for id in Parameter_Id {
-        resize(&plugin.parameters[id].interpolation_buffer, int(max_frames_count))
+        resize(&plugin._parameters[id].interpolation_buffer, int(max_frames_count))
     }
     plugin_activate(plugin, sample_rate, int(min_frames_count), int(max_frames_count))
     return true
@@ -221,7 +222,7 @@ clap_plugin_process :: proc "c" (plugin: ^clap.plugin_t, process: ^clap.process_
     frame_count := int(process.frames_count)
     event_count := process.in_events->size()
 
-    for &parameter in plugin.parameters {
+    for &parameter in plugin._parameters {
         if sync.atomic_load(&parameter.is_being_changed_manually) && sync.atomic_load(&parameter.is_interpolating) {
             value := sync.atomic_load(&parameter.value)
             previous_value := parameter.previous_value
@@ -241,7 +242,7 @@ clap_plugin_process :: proc "c" (plugin: ^clap.plugin_t, process: ^clap.process_
             case .PARAM_VALUE:
                 clap_event := cast(^clap.event_param_value_t)event_header
                 parameter_id := Parameter_Id(clap_event.param_id)
-                parameter := &plugin.parameters[parameter_id]
+                parameter := &plugin._parameters[parameter_id]
                 if !sync.atomic_load(&parameter.is_being_changed_manually) {
                     event_frame := int(clap_event.header.time)
                     previous_event_frame := previous_automation_event_frames[parameter_id]
@@ -276,24 +277,24 @@ clap_plugin_process :: proc "c" (plugin: ^clap.plugin_t, process: ^clap.process_
         process.audio_outputs[0].data64[1][frame] = out_r
     }
 
-    for &parameter in plugin.parameters {
+    for &parameter in plugin._parameters {
         sync.atomic_store(&parameter.is_interpolating, false)
     }
 
     // Sort and send output events, then clear the buffer.
-    sync.lock(&plugin.output_event_mutex)
-    slice.sort_by(plugin.output_events[:], proc(i, j: Clap_Event_Union) -> bool {
+    sync.lock(&plugin._output_event_mutex)
+    slice.sort_by(plugin._output_events[:], proc(i, j: Clap_Event_Union) -> bool {
         i := i
         j := j
         i_header := cast(^clap.event_header_t)&i
         j_header := cast(^clap.event_header_t)&j
         return i_header.time < j_header.time
     })
-    for &event in plugin.output_events {
+    for &event in plugin._output_events {
         process.out_events->try_push(cast(^clap.event_header_t)&event)
     }
-    clear(&plugin.output_events)
-    sync.unlock(&plugin.output_event_mutex)
+    clear(&plugin._output_events)
+    sync.unlock(&plugin._output_event_mutex)
 
     return .CONTINUE
 }
@@ -399,7 +400,7 @@ clap_extension_parameters := clap.plugin_params_t{
         if len(Parameter_Id) == 0 {
             return false
         }
-        out_value^ = sync.atomic_load(&plugin.parameters[Parameter_Id(param_id)].value)
+        out_value^ = sync.atomic_load(&plugin._parameters[Parameter_Id(param_id)].value)
         return true
     },
     value_to_text = proc "c" (plugin: ^clap.plugin_t, param_id: clap.id, value: f64, out_buffer: [^]byte, out_buffer_capacity: u32) -> bool {
@@ -435,7 +436,7 @@ clap_extension_parameters := clap.plugin_params_t{
             #partial switch event_header.type {
             case .PARAM_VALUE:
                 clap_event := cast(^clap.event_param_value_t)event_header
-                sync.atomic_store(&plugin.parameters[Parameter_Id(clap_event.param_id)].value, clap_event.value)
+                sync.atomic_store(&plugin._parameters[Parameter_Id(clap_event.param_id)].value, clap_event.value)
             }
         }
     },
@@ -535,17 +536,26 @@ clap_extension_state := clap.plugin_state_t{
 // Gui Extension
 //==========================================================================
 
+when ODIN_OS == .Windows {
+	WINDOW_API :: clap.WINDOW_API_WIN32
+}
+//else when ODIN_OS == .Darwin {
+//	WINDOW_API :: clap.WINDOW_API_COCOA
+//} else when ODIN_OS == .Linux {
+//	WINDOW_API :: clap.WINDOW_API_X11
+//}
+
 clap_extension_gui := clap.plugin_gui_t{
     is_api_supported = proc "c" (plugin: ^clap.plugin_t, api: cstring, is_floating: bool) -> bool {
-        return api == clap.WINDOW_API && !is_floating
+        return api == WINDOW_API && !is_floating
     },
     get_preferred_api = proc "c" (plugin: ^clap.plugin_t, api: ^cstring, is_floating: ^bool) -> bool {
-        api^ = clap.WINDOW_API
+        api^ = WINDOW_API
         is_floating^ = false
         return true
     },
     create = proc "c" (plugin: ^clap.plugin_t, api: cstring, is_floating: bool) -> bool {
-        if !(api == clap.WINDOW_API && !is_floating) {
+        if !(api == WINDOW_API && !is_floating) {
             return false
         }
 		return true
@@ -561,9 +571,9 @@ clap_extension_gui := clap.plugin_gui_t{
     get_size = proc "c" (plugin: ^clap.plugin_t, width, height: ^u32) -> bool {
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
-        x, y := plugin_gui_size(plugin)
-        width^ = u32(x)
-        height^ = u32(y)
+        plugin._gui_width, plugin._gui_height = plugin_gui_size(plugin)
+        width^ = u32(plugin._gui_width)
+        height^ = u32(plugin._gui_height)
         return true
     },
     can_resize = proc "c" (plugin: ^clap.plugin_t) -> bool {
@@ -589,15 +599,15 @@ clap_extension_gui := clap.plugin_gui_t{
     set_size = proc "c" (plugin: ^clap.plugin_t, width, height: u32) -> bool {
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
-        plugin.gui_width = int(width)
-        plugin.gui_height = int(height)
+        plugin._gui_width = int(width)
+        plugin._gui_height = int(height)
         plugin_gui_set_size(plugin, int(width), int(height))
         return true
     },
     set_parent = proc "c" (plugin: ^clap.plugin_t, window: ^clap.window_t) -> bool {
         context = main_context
         plugin := cast(^Plugin)(plugin.plugin_data)
-        plugin_gui_init(plugin, plugin.gui_width, plugin.gui_height, window.handle)
+        plugin_gui_init(plugin, plugin._gui_width, plugin._gui_height, window.handle)
         return true
     },
     set_transient = proc "c" (plugin: ^clap.plugin_t, window: ^clap.window_t) -> bool {

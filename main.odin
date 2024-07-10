@@ -35,7 +35,10 @@ Plugin :: struct {
 startup :: proc() {}
 shutdown :: proc() {}
 
-plugin_init :: proc(plugin: ^Plugin) {}
+plugin_init :: proc(plugin: ^Plugin) {
+    plugin.window_width = 400
+    plugin.window_height = 300
+}
 plugin_destroy :: proc(plugin: ^Plugin) {}
 plugin_reset :: proc(plugin: ^Plugin) {}
 
@@ -185,13 +188,8 @@ plugin_gui_destroy :: proc(plugin: ^Plugin) {
 }
 
 plugin_gui_size :: proc(plugin: ^Plugin) -> (width, height: int) {
-    if sync.atomic_load(&plugin.gui_is_open) {
-        width = sync.atomic_load(&plugin.window_width)
-        height = sync.atomic_load(&plugin.window_height)
-    } else {
-        width = 400
-        height = 300
-    }
+    width = sync.atomic_load(&plugin.window_width)
+    height = sync.atomic_load(&plugin.window_height)
     return
 }
 
