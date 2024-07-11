@@ -10,6 +10,22 @@ import "core:strings"
 import "core:strconv"
 import "clap"
 
+//
+// The idea of this file is to implement the backend of
+// a CLAP plugin. This file depends on functions that are
+// supposed to be implemented by the plugin author in a
+// different file.
+//
+// The user-implemented functions are supposed to be independent
+// of CLAP implementation, so that other backends (such as VST)
+// could be implemented and use the same plugin logic.
+//
+// There is still a lot of work to be done, and there are
+// still a lot of things I am not sure of. I don't yet know
+// how to abstract the audio processing code out of the
+// CLAP implementation.
+//
+
 CLAP_VERSION :: clap.version_t{1, 2, 1}
 
 clap_plugin_descriptor := clap.plugin_descriptor_t{

@@ -13,6 +13,7 @@ import nvg_gl "vendor:nanovg/gl"
 import cte "core:text/edit"
 import osw "os_window"
 
+//
 // The idea of this file is to provide platform independent
 // GUI logic. When placed in your project next to your other code,
 // it provides you with many convenient functions for making GUIs
@@ -25,6 +26,11 @@ import osw "os_window"
 //
 // There is an os_window module that I made which is the generic backend
 // for windowing. Right now only Windows is implemented.
+//
+// There is one function that is used that the user needs to implement:
+//
+// gui_event :: proc(window: ^Window, event: Gui_Event)
+//
 
 @(thread_local) _window_stack: [dynamic]^Window
 
