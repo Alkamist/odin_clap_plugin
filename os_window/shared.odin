@@ -1,4 +1,4 @@
-package oswindow
+package os_window
 
 //
 // This is a module that is meant to wrap windowing logic
